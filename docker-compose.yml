@@ -1,0 +1,23 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    expose:
+      - "27017"
+
+  backend:
+    build:
+      context: ./backend-fastapi
+    env_file:
+      - ./backend-fastapi/.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017/waste-disposal
+    depends_on:
+      - mongo
+    ports:
+      - "5000:5000"
+
+volumes:
+  mongo_data:

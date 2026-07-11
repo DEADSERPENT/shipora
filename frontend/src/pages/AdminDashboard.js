@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { io } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
+import ChatAnalyticsTab from '../components/ChatAnalyticsTab';
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
@@ -19,7 +20,7 @@ const COMPLAINT_CATEGORIES = {
 
 const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000';
 
-function StatCard({ icon, value, label, color }) {
+export function StatCard({ icon, value, label, color }) {
   const palette = {
     green:  { accent: '#2d7a2d', bg: '#e8f5e8' },
     blue:   { accent: '#2563eb', bg: '#eff6ff' },
@@ -167,6 +168,7 @@ export default function AdminDashboard() {
           { key: 'overview',   label: '📊 Overview' },
           { key: 'logs',       label: '📋 Collection Logs' },
           { key: 'complaints', label: `📣 Complaints${complaints.filter(c=>c.status==='open').length > 0 ? ` (${complaints.filter(c=>c.status==='open').length})` : ''}` },
+          { key: 'analytics',  label: '🎙️ Chat Analytics' },
           { key: 'settings',   label: '⚙️ Settings' },
         ].map(t => (
           <button key={t.key} type="button"
@@ -416,6 +418,8 @@ export default function AdminDashboard() {
           </div>
         </div>
       )}
+
+      {activeTab === 'analytics' && <ChatAnalyticsTab API={API} />}
 
       {activeTab === 'complaints' && (
         <div>
