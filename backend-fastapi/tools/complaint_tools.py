@@ -3,6 +3,7 @@ creation. execute_create_complaint's actual DB write goes through
 insert_complaint(), the same helper routes/complaints.py's REST endpoint
 uses — the tool and the REST API never duplicate the write logic."""
 
+from datetime import datetime, timedelta
 from functools import partial
 from typing import Literal, Optional
 
@@ -14,6 +15,29 @@ TOOL_GET_COMPLAINT_STATUS = {
     "name": "get_complaint_status",
     "description": "Look up the logged-in resident's own complaints and their current status.",
     "input_schema": {"type": "object", "properties": {}, "required": []},
+}
+
+TOOL_LIST_COMPLAINTS_ADMIN = {
+    "name": "list_complaints_admin",
+    "description": (
+        "Admin-only: list/filter complaints across ALL residents by status and/or category — "
+        "for questions like 'how many complaints are pending today', 'show complaints from an area', "
+        "or 'plastic waste complaints this week'. Not for the logged-in resident's own complaints "
+        "(use get_complaint_status for that)."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "enum": ["open", "in_progress", "resolved", "closed"], "description": "Omit for all statuses."},
+            "category": {
+                "type": "string",
+                "enum": ["missed_pickup", "vehicle_issue", "timing", "cleanliness", "driver_behaviour", "other"],
+                "description": "Omit for all categories.",
+            },
+            "days": {"type": "integer", "description": "Only include complaints from the last N days. Omit for all time."},
+        },
+        "required": [],
+    },
 }
 
 TOOL_CREATE_COMPLAINT = {
@@ -81,6 +105,42 @@ async def execute_get_complaint_status(current_user: dict = None) -> dict:
     }
 
 
+async def execute_list_complaints_admin(
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    days: Optional[int] = None,
+    current_user: Optional[dict] = None,
+) -> dict:
+    if not current_user or current_user.get("role") != "admin":
+        return {"note": "Only admins can list complaints across all residents. Tell the user to log in as an admin, or ask about their own complaints instead."}
+
+    query = {}
+    if status:
+        query["status"] = status
+    if category:
+        query["category"] = category
+    if days:
+        query["createdAt"] = {"$gte": datetime.utcnow() - timedelta(days=days)}
+
+    complaints = await Complaint.find(query).sort(-Complaint.createdAt).to_list()
+    if not complaints:
+        return {"complaints": [], "count": 0, "note": "No complaints match those filters."}
+
+    return {
+        "count": len(complaints),
+        "complaints": [
+            {
+                "subject": c.subject,
+                "category": c.category,
+                "status": c.status,
+                "residentName": c.residentName or "Anonymous",
+                "createdAt": c.createdAt.isoformat() if c.createdAt else None,
+            }
+            for c in complaints[:20]
+        ],
+    }
+
+
 async def execute_create_complaint(
     subject: str,
     category: str,
@@ -98,9 +158,10 @@ async def execute_create_complaint(
 def bind_complaint_tools(current_user: Optional[dict]):
     """Returns (tool_schemas, executors) for agents/complaints_agent.py, with
     current_user bound server-side so the model can never supply/spoof one."""
-    tools = [TOOL_GET_COMPLAINT_STATUS, TOOL_CREATE_COMPLAINT]
+    tools = [TOOL_GET_COMPLAINT_STATUS, TOOL_CREATE_COMPLAINT, TOOL_LIST_COMPLAINTS_ADMIN]
     executors = {
         "get_complaint_status": partial(execute_get_complaint_status, current_user=current_user),
         "create_complaint": partial(execute_create_complaint, current_user=current_user),
+        "list_complaints_admin": partial(execute_list_complaints_admin, current_user=current_user),
     }
     return tools, executors

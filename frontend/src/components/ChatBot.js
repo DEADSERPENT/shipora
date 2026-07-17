@@ -175,6 +175,7 @@ export default function ChatBot() {
   const currentUtteranceRef = useRef(null); // 'browser' mode only
   const speechKeepAliveRef = useRef(null); // 'browser' mode only — resume() interval while speaking
   const voiceStateRef      = useRef(initialVoiceState.current); // live mirror of voiceState.current, for handlers created in async callbacks
+  const settingsRef        = useRef(settings); // live mirror of settings, for the same reason as voiceStateRef — see its useEffect below
   const speechInterruptedRef = useRef(false); // 'browser' mode only — barge-in guard, see interruptSpeech()
   const bargeInRafRef      = useRef(null); // 'browser' mode only — monitorBargeIn's requestAnimationFrame id
   const bargeInLoudStartRef = useRef(null); // 'browser' mode only — timestamp the amplitude first crossed the calibrated trigger threshold
@@ -186,6 +187,20 @@ export default function ChatBot() {
   const detectedLanguageLogRef = useRef([]);
 
   useEffect(() => { voiceStateRef.current = voiceState.current; }, [voiceState]);
+  // Long-lived closures (recognition.onresult -> sendBrowserTranscript ->
+  // speakReplyBrowser -> onDone -> scheduleResume -> beginListeningBrowser ->
+  // a NEW recognition.onresult, and so on) get created once and then re-invoke
+  // each other by name across many renders during the continuous voice loop.
+  // Each of those functions is re-created fresh every render, but a callback
+  // bound INTO a live object (recognition.onresult, utterance.onend) stays
+  // pinned to whichever render created it — so if a language switch triggers
+  // a re-render in the middle of that chain, the already-in-flight closure
+  // keeps reading the OLD `settings` from its own render forever, never the
+  // updated one, even though React state itself is correctly updated. This
+  // was silently breaking language persistence across turns. Reading
+  // settingsRef.current instead of `settings` in those handlers fixes it,
+  // since a ref is a single mutable object shared by every closure.
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -397,8 +412,10 @@ export default function ChatBot() {
     // Fixed language -> its locale; 'auto' -> broad-tolerance en-IN capture,
     // with Gemini (not the STT layer) doing the actual language matching —
     // SpeechRecognition can't dynamically auto-detect/switch language
-    // mid-utterance, see multilingual.js's module comment.
-    recognition.lang = getRecognitionLang(settings.language);
+    // mid-utterance, see multilingual.js's module comment. settingsRef (not
+    // settings) because this function can be invoked from a stale closure
+    // captured before a language switch — see settingsRef's own comment.
+    recognition.lang = getRecognitionLang(settingsRef.current.language);
     recognition.interimResults = false;
     recognition.continuous = false;
     recognition.onstart = () => dispatch({ type: VOICE_STATES.LISTENING });
@@ -550,7 +567,7 @@ export default function ChatBot() {
   // settings + history as a side effect), else null.
   const tryHandleLanguageSwitch = (text) => {
     const targetLang = detectLanguageSwitchCommand(text);
-    if (!targetLang || targetLang === settings.language) return null;
+    if (!targetLang || targetLang === settingsRef.current.language) return null;
     const confirmation = LANGUAGES[targetLang].switchConfirmation;
     setSettings(s => ({ ...s, language: targetLang }));
     setHistory(h => [
@@ -587,9 +604,10 @@ export default function ChatBot() {
       // the clean transcript. mode: 'voice' additionally caps replies to
       // ~3-4 spoken sentences — this is the browser voice conversation path,
       // text chat (see send() below) uses mode: 'text' and keeps full-length
-      // replies.
+      // replies. settingsRef (not settings): this function can run from a
+      // closure captured before a language switch — see settingsRef's comment.
       const { data } = await axios.post(`${API}/chat`, {
-        message: buildLanguageDirective(settings.language, transcript, 'voice'),
+        message: buildLanguageDirective(settingsRef.current.language, transcript, 'voice'),
         history: historyForApi(),
         sessionId: sessionIdRef.current,
       });
@@ -619,14 +637,15 @@ export default function ChatBot() {
 
   // langKeyOverride: used right after a language switch, where settings.language
   // is still the OLD value in this closure (setSettings() is async) — see
-  // tryHandleLanguageSwitch's caller in sendBrowserTranscript.
+  // tryHandleLanguageSwitch's caller in sendBrowserTranscript. Falls back to
+  // settingsRef (not settings) for the same stale-closure reason.
   const speakReplyBrowser = (text, langKeyOverride) => {
-    const langKey = langKeyOverride || settings.language;
+    const langKey = langKeyOverride || settingsRef.current.language;
     const utterance = new SpeechSynthesisUtterance(stripForSpeech(text));
     // pickVoiceForLanguage: manual override (settings.voiceURI) if still
     // installed, else the best match for the current language, else a
     // graceful fallback chain — see multilingual.js.
-    const voice = pickVoiceForLanguage(langKey, voiceOptions, settings.voiceURI);
+    const voice = pickVoiceForLanguage(langKey, voiceOptions, settingsRef.current.voiceURI);
     if (voice) {
       utterance.voice = voice;
       utterance.lang = voice.lang;
@@ -825,7 +844,7 @@ export default function ChatBot() {
       // spoken-length framing ("3-4 sentences") applied to the voice path
       // below; typed chat should keep getting full-length replies.
       const { data } = await axios.post(`${API}/chat`, {
-        message: buildLanguageDirective(settings.language, msg, 'text'),
+        message: buildLanguageDirective(settingsRef.current.language, msg, 'text'),
         history: historyForApi(),
         sessionId: sessionIdRef.current,
       });

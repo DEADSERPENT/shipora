@@ -9,9 +9,8 @@ CLIENT_URL = os.getenv("CLIENT_URL", "http://localhost:3000")
 JWT_SECRET = os.getenv("JWT_SECRET", "ecotrack_secret")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/waste-disposal")
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")  # Gemini is the only LLM (classification, tool-calling, and services/llm.py's fallback tier)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # STT/TTS only (see services/stt.py/tts.py) — not used for any LLM/chat path
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # STT/TTS reuse OPENAI_API_KEY above — no separate key needed.

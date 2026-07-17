@@ -45,10 +45,19 @@ async def get_optional_user(request: Request) -> Optional[dict]:
     token from logged-in visitors without requiring auth for anonymous ones."""
     auth_header = request.headers.get("authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
+        # TEMP DIAGNOSTIC (remove once the "resident treated as logged out"
+        # bug is confirmed fixed): only /api/chat's call sites care about this.
+        if request.url.path == "/api/chat":
+            print(f"[auth-diag] {request.url.path}: no Authorization header on this request (present headers: {list(request.headers.keys())})")
         return None
     try:
-        return verify_token(auth_header.split(" ", 1)[1])
-    except jwt.PyJWTError:
+        user = verify_token(auth_header.split(" ", 1)[1])
+        if request.url.path == "/api/chat":
+            print(f"[auth-diag] {request.url.path}: token verified OK -> role={user.get('role')} id={user.get('id')} name={user.get('name')}")
+        return user
+    except jwt.PyJWTError as err:
+        if request.url.path == "/api/chat":
+            print(f"[auth-diag] {request.url.path}: token present but FAILED verification -> {type(err).__name__}: {err}")
         return None
 
 

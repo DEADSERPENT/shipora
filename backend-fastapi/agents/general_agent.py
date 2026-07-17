@@ -1,6 +1,6 @@
 """General-purpose EcoBot agent — the orchestrator's fallback branch for
 anything that isn't tracking/complaints/support, and for when a specialist
-agent can't run (no Anthropic key, tool-call failure, etc).
+agent can't run (no Gemini key, tool-call failure, etc).
 
 Owns the system prompt, rule-based knowledge base, and LLM call that used to
 live in routes/chat.py. Relocated (not duplicated) here so agents/orchestrator.py
@@ -13,6 +13,7 @@ from typing import Optional
 
 from agents.base import run_tool_agent
 from services.llm import get_llm_reply
+from tools.analytics import TOOL_GET_OPERATIONS_SUMMARY, execute_get_operations_summary
 from tools.knowledge_base_tools import TOOL_SEARCH_KNOWLEDGE_BASE, execute_search_knowledge_base
 
 GENERAL_SYSTEM_PROMPT = """You are EcoBot, the friendly AI assistant for EcoTrack — a smart waste disposal management system. You help residents, drivers, and admins use the platform effectively.
@@ -28,6 +29,7 @@ You ONLY answer questions related to:
 - Support: contact details, working hours, FAQs
 - Waste collection schedules: daily, alternate days, weekly options
 - Resident types: independent house vs flat/apartment
+- Operational analytics (admin-facing): complaint counts/trends, today's collection activity, resolution times — use the get_operations_summary tool for these broad "how are things going" questions, never guess numbers. When you call it, report BOTH the complaint stats and the vehicle/collection activity it returns — don't summarize only one half.
 
 Respond as if you're speaking to someone out loud, not writing a document:
 - Use short sentences and contractions ("you'll", "it's", "don't").
@@ -208,13 +210,16 @@ def rule_based_reply(msg: str) -> str:
 
 async def handle(message: str, history: list, sentiment: str = "neutral", current_user: dict = None, on_stage=None) -> dict:
     """Three-tier fallback, each tier completely independent of the ones
-    below it: (1) Anthropic tool-calling KB search — grounds informational
-    answers in the same KB data rather than freeform recall; (2) the
-    existing provider-agnostic get_llm_reply (LLM_PROVIDER); (3) the
-    existing rule_based_reply() keyword match, EcoTrack's original
-    zero-API-key safety net, completely unchanged."""
-    tools = [TOOL_SEARCH_KNOWLEDGE_BASE]
-    executors = {"search_knowledge_base": execute_search_knowledge_base}
+    below it: (1) Gemini tool-calling KB search + operations-summary
+    lookup — grounds informational/analytics answers in real data rather
+    than freeform recall; (2) the existing get_llm_reply (Gemini plain
+    text); (3) the existing rule_based_reply() keyword match, EcoTrack's
+    original zero-API-key safety net, completely unchanged."""
+    tools = [TOOL_SEARCH_KNOWLEDGE_BASE, TOOL_GET_OPERATIONS_SUMMARY]
+    executors = {
+        "search_knowledge_base": execute_search_knowledge_base,
+        "get_operations_summary": execute_get_operations_summary,
+    }
     tool_reply = await run_tool_agent(GENERAL_SYSTEM_PROMPT, tools, executors, message, history, sentiment, on_stage=on_stage)
     if tool_reply is not None:
         return {"reply": tool_reply, "source": "ai"}

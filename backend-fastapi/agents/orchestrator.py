@@ -1,5 +1,5 @@
-"""Router agent: classifies intent + sentiment in one Anthropic tool call,
-then dispatches to the matching specialist agent, falling back to
+"""Router agent: classifies intent + sentiment in one forced Gemini function
+call, then dispatches to the matching specialist agent, falling back to
 general_agent for anything unclassified or when a specialist can't produce
 a reply (no API key, tool-call error, etc).
 
@@ -13,7 +13,7 @@ from typing import Optional
 import config
 from agents import complaints_agent, general_agent, schedule_agent, support_agent, tracking_agent
 
-CLASSIFIER_MODEL = "claude-haiku-4-5-20251001"
+CLASSIFIER_MODEL = "gemini-flash-lite-latest"
 
 CLASSIFY_TOOL = {
     "name": "classify",
@@ -24,7 +24,7 @@ CLASSIFY_TOOL = {
             "agent": {
                 "type": "string",
                 "enum": ["tracking", "complaints", "schedule", "support", "general"],
-                "description": "tracking = truck location/ETA questions. complaints = filing or checking complaint status. schedule = the user's OWN pickup schedule/waste type. support = contact details/hours. general = anything else (schedule format options, waste types in general, account help, greetings, off-topic).",
+                "description": "tracking = truck location/ETA/GPS questions, driver roster lookups, historical collection logs, and smart bin fill-level status. complaints = filing a complaint, checking a resident's OWN complaint status, OR any complaint-specific counts/stats/listing across all residents (e.g. 'how many complaints are pending', 'show complaints from an area', 'plastic waste complaints this week') — anything about complaints specifically, even in aggregate. schedule = the user's OWN pickup schedule/waste type, or an area's collection days/window. support = contact details/hours. general = anything else (schedule format options, waste types in general, account help, greetings, off-topic, or a BROAD cross-domain summary spanning multiple areas like 'summarize today's operations' or 'what's today's performance' — NOT a complaints-only stats question, which is 'complaints').",
             },
             "sentiment": {"type": "string", "enum": ["positive", "neutral", "negative"]},
         },
@@ -45,7 +45,7 @@ _POSITIVE_WORDS = {"thanks", "thank", "great", "awesome", "good", "love", "perfe
 
 def _keyword_classify(message: str) -> dict:
     lower = message.lower()
-    if any(k in lower for k in ("track", "truck", "vehicle", "eta", "where")):
+    if any(k in lower for k in ("track", "truck", "vehicle", "eta", "where", "driver", "bin", "fill level")):
         agent = "tracking"
     elif any(k in lower for k in ("complaint", "complain", "report", "issue")):
         agent = "complaints"
@@ -66,22 +66,26 @@ def _keyword_classify(message: str) -> dict:
 
 
 def _classify_sync(message: str, history: list) -> dict:
-    from anthropic import Anthropic
+    import google.generativeai as genai
 
-    client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    messages = [{"role": h["role"], "content": h["content"]} for h in history[-6:]]
-    messages.append({"role": "user", "content": message})
-    resp = client.messages.create(
-        model=CLASSIFIER_MODEL, max_tokens=100,
-        tools=[CLASSIFY_TOOL], tool_choice={"type": "tool", "name": "classify"},
-        messages=messages,
+    genai.configure(api_key=config.GEMINI_API_KEY)
+    model = genai.GenerativeModel(CLASSIFIER_MODEL)
+    contents = [{"role": "user" if h["role"] == "user" else "model", "parts": [h["content"]]} for h in history[-6:]]
+    contents.append({"role": "user", "parts": [message]})
+    resp = model.generate_content(
+        contents,
+        tools={"function_declarations": [
+            {"name": CLASSIFY_TOOL["name"], "description": CLASSIFY_TOOL["description"], "parameters": CLASSIFY_TOOL["input_schema"]}
+        ]},
+        tool_config={"function_calling_config": {"mode": "ANY", "allowed_function_names": ["classify"]}},
     )
-    block = next(b for b in resp.content if b.type == "tool_use")
-    return {"agent": block.input["agent"], "sentiment": block.input["sentiment"]}
+    fc = resp.candidates[0].content.parts[0].function_call
+    args = dict(fc.args)
+    return {"agent": args["agent"], "sentiment": args["sentiment"]}
 
 
 async def classify(message: str, history: list) -> dict:
-    if config.ANTHROPIC_API_KEY in config.PLACEHOLDER_VALUES:
+    if config.GEMINI_API_KEY in config.PLACEHOLDER_VALUES:
         return _keyword_classify(message)
     try:
         return await asyncio.to_thread(_classify_sync, message, history)
