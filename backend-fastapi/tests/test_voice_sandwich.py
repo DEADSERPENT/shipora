@@ -5,7 +5,7 @@ import pytest
 
 from models.customer import Customer, Location
 from models.shipment import ParcelDetails, Party, Shipment
-from services import gemini_client
+from services import ollama_client
 from tests.conftest import register
 from tools.shipment_tools import execute_get_shipment_status, extract_tracking_number
 from voice import pipeline
@@ -52,7 +52,7 @@ async def test_voice_round_trip_stage_order_and_grounding(client, monkeypatch):
     r = await client.post("/api/voice/chat", files={"audio": ("a.wav", b"x" * 100, "audio/wav")}, data={"sessionId": "s1"})
     assert r.status_code == 200, r.text
     body = r.json()
-    # no Gemini key in tests = LLM "down": the answer must still come from the database, labelled honestly
+    # no Ollama in tests = LLM "down": the answer must still come from the database, labelled honestly
     assert body["agent"] == "tracking" and body["source"] == "builtin"
     assert "SHP1A2B3C4D5E" in body["reply"] and "out for delivery" in body["reply"]
     assert body["audioMimeType"] == "audio/wav" and body["audioBase64"]
@@ -77,14 +77,14 @@ async def test_misheard_id_is_repaired_only_from_the_callers_own_shipments(clien
 
 
 async def test_voice_uses_a_tighter_llm_budget_than_chat(monkeypatch):
-    monkeypatch.setattr("config.GEMINI_TIMEOUT_SECONDS", 20.0)
-    assert gemini_client.request_options()["timeout"] == 20.0
-    token = gemini_client.budget_override.set(8.0)
+    monkeypatch.setattr("config.OLLAMA_TIMEOUT_SECONDS", 30.0)
+    assert ollama_client._timeout() == 30.0
+    token = ollama_client.budget_override.set(8.0)
     try:
-        assert gemini_client.request_options()["timeout"] == 8.0
+        assert ollama_client._timeout() == 8.0
     finally:
-        gemini_client.budget_override.reset(token)
-    assert gemini_client.request_options()["timeout"] == 20.0
+        ollama_client.budget_override.reset(token)
+    assert ollama_client._timeout() == 30.0
 
 
 # ─── hearing: transcript correction ──────────────────────────────────────

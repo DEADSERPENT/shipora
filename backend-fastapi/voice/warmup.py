@@ -32,8 +32,9 @@ async def warm_up() -> list:
         steps.append(_timed("stt", asyncio.to_thread(stt._load_onnx_model)))
     if (config.TTS_PROVIDER or "").lower() == "piper":
         steps.append(_timed("tts", tts.synthesize_speech("Ready.")))
-    if ollama_client.enabled():
-        steps.append(_timed("llm", ollama_client.chat([{"role": "user", "content": "hi"}], max_tokens=1)))
+    if (config.STT_PROVIDER or "").lower() == "faster_whisper":
+        steps.append(_timed("stt", asyncio.to_thread(stt._load_whisper_model)))
+    steps.append(_timed("llm", ollama_client.chat([{"role": "user", "content": "hi"}], max_tokens=1)))
     results = await asyncio.gather(*steps)
     log.info("voice stack warmed", extra={"event": "warmup_done", "steps": str(results)})
     return list(results)

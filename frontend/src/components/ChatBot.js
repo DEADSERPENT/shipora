@@ -249,7 +249,7 @@ function stripForSpeech(text) {
 // API (AnalyserNode + requestAnimationFrame). No new dependency, no
 // realtime framework; see docs/VOICE_ARCHITECTURE.md.
 const SPEECH_RMS_THRESHOLD = 0.035;
-const SILENCE_MS = 1100;
+const SILENCE_MS = 1500;   // spelling a tracking number digit by digit has natural gaps; 1100 ms cut callers off mid-ID in a real-Chrome run
 const MAX_UTTERANCE_MS = 20000;
 const RESUME_DELAY_MS = 400;
 const MAX_CONSECUTIVE_ERRORS = 3;
@@ -631,7 +631,7 @@ export default function ChatBot() {
     if (!activeRef.current) return;
     const recognition = new SpeechRecognitionAPI();
     // Fixed language -> its locale; 'auto' -> broad-tolerance en-IN capture,
-    // with Gemini (not the STT layer) doing the actual language matching —
+    // with the assistant (not the STT layer) doing the actual language matching —
     // SpeechRecognition can't dynamically auto-detect/switch language
     // mid-utterance, see multilingual.js's module comment. settingsRef (not
     // settings) because this function can be invoked from a stale closure
@@ -733,7 +733,7 @@ export default function ChatBot() {
     forceStopSpeaking();
     // Also catches GENERATING_RESPONSE: speakReplyBrowser only dispatches
     // SPEAKING from utterance.onstart, which is async, so an interrupt can
-    // land just before that fires — this is the same for Gemini replies and
+    // land just before that fires — this is the same for the assistant replies and
     // local switch confirmations (speakReplyBrowser is the one shared speech
     // path either way), just far more likely to be hit on confirmations
     // since their whole utterance is short relative to that startup window.
@@ -780,7 +780,7 @@ export default function ChatBot() {
 
   // ── Multilingual: in-conversation language-switch commands ("Switch to
   // Kannada", "अब हिंदी में बात करो", ...) are handled 100% locally — no
-  // /api/chat call — so switching is instant and never depends on Gemini
+  // /api/chat call — so switching is instant and never depends on the assistant
   // correctly interpreting a meta-request. Shared by both the voice
   // transcript path and the typed-text path (see send() below), per the
   // "reusable helper, no duplication" requirement. Returns
@@ -819,7 +819,7 @@ export default function ChatBot() {
 
     try {
       // buildLanguageDirective wraps the transcript with a bracketed language
-      // instruction Gemini reads as part of the user's turn — the mechanism
+      // instruction the assistant reads as part of the user's turn — the mechanism
       // for language steering without any backend change. Only the wire
       // payload carries it; the displayed/stored history entry (below) stays
       // the clean transcript. mode: 'voice' additionally caps replies to
@@ -1027,7 +1027,7 @@ export default function ChatBot() {
     // Barge-in via button press: interrupt, don't end the conversation.
     // Also treated as interruptible during GENERATING_RESPONSE (the brief
     // async window before utterance.onstart flips state to SPEAKING — see
-    // interruptSpeech()) so a fast button-press right as a reply — Gemini or
+    // interruptSpeech()) so a fast button-press right as a reply — the assistant or
     // a local switch confirmation — starts doesn't fall through to ending
     // the whole conversation instead of just stopping this one reply.
     // 'browser' mode only — server mode's button-while-SPEAKING behavior
@@ -1070,7 +1070,7 @@ export default function ChatBot() {
     detectedLanguageLogRef.current.push({ text: msg, language: detectScriptLanguage(msg), at: Date.now() });
     // Same local, deterministic language-switch handling as the voice path
     // (see tryHandleLanguageSwitch) — typed "switch to Hindi" works too, no
-    // /api/chat call, no dependency on Gemini interpreting a meta-request.
+    // /api/chat call, no dependency on the assistant interpreting a meta-request.
     if (tryHandleLanguageSwitch(msg)) return;
 
     const userMsg = { role: 'user', content: msg };

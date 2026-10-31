@@ -1,66 +1,45 @@
-"""Provider failure and small-model behaviour: Gemini quota/timeouts fall back to the built-in rules, and a model that answers
-with a promise ("let me check") instead of data never reaches the user as an answer."""
+"""Provider failure and small-model behaviour: an Ollama outage or timeout falls back to the built-in rules (and opens a cooldown),
+and a model that answers with a promise ("let me check") instead of data never reaches the user as an answer."""
 import time
-from types import SimpleNamespace
 
+import httpx
 import pytest
-from google.api_core import exceptions as gexc
 
-import config
 from agents import base, general_agent
-from services import gemini_client
+from services import ollama_client
+from tests import fake_ollama
 from tests.conftest import register
 
 pytestmark = pytest.mark.anyio
 
 
-def fake_gemini(monkeypatch, exc):
-    import google.generativeai as genai
-    calls = {"n": 0}
-
-    class Model:
-        def __init__(self, *a, **k): ...
-        def generate_content(self, *a, **k):
-            calls["n"] += 1
-            raise exc
-    monkeypatch.setattr(config, "GEMINI_API_KEY", "test-key-not-real")
-    monkeypatch.setattr(genai, "configure", lambda **k: None)
-    monkeypatch.setattr(genai, "GenerativeModel", Model)
-    gemini_client.reset()
-    return calls
-
-
-@pytest.mark.parametrize("exc", [
-    gexc.ResourceExhausted("429 You exceeded your current quota (free_tier_requests, limit: 15)"),
-    gexc.TooManyRequests("429 rate limited"),
-    gexc.DeadlineExceeded("504 deadline exceeded"),
-    TimeoutError("timed out"),
-], ids=["quota-429", "too-many-requests", "deadline", "timeout"])
-async def test_gemini_limits_and_timeouts_fall_back_fast_and_open_the_cooldown(client, monkeypatch, exc):
-    calls = fake_gemini(monkeypatch, exc)
+@pytest.mark.parametrize("fail", [
+    lambda mp: fake_ollama.failing(mp, httpx.ConnectError("connection refused")),
+    lambda mp: fake_ollama.failing(mp, httpx.ReadTimeout("timed out")),
+    lambda mp: fake_ollama.status(mp, 503),
+], ids=["down", "timeout", "5xx"])
+async def test_an_ollama_outage_falls_back_fast_and_opens_the_cooldown(client, monkeypatch, fail):
+    calls = fail(monkeypatch)
     t = time.perf_counter()
     r = await client.post("/api/chat", json={"message": "Where is shipment SHP1A2B3C4D5E?", "sessionId": "pf-1"})
     assert r.status_code == 200 and r.json()["source"] == "builtin" and r.json()["reply"]
-    assert calls["n"] == 1 and gemini_client.is_unavailable() and time.perf_counter() - t < 5
+    assert calls["n"] == 1 and ollama_client.is_unavailable() and time.perf_counter() - t < 5
     again = await client.post("/api/chat", json={"message": "How do I create a shipment?", "sessionId": "pf-1"})
-    assert again.status_code == 200 and calls["n"] == 1                       # in cooldown: Gemini is not touched again
-    gemini_client.reset()
+    assert again.status_code == 200 and calls["n"] == 1                       # in cooldown: Ollama is not touched again
 
 
 async def test_a_bad_request_does_not_trip_the_cooldown(client, monkeypatch):
-    calls = fake_gemini(monkeypatch, gexc.InvalidArgument("400 bad tool argument"))
+    fake_ollama.status(monkeypatch, 404)                                      # e.g. the model name is not installed
     await client.post("/api/chat", json={"message": "Where is shipment SHP1A2B3C4D5E?", "sessionId": "pf-2"})
-    assert not gemini_client.is_unavailable()
-    gemini_client.reset()
+    assert not ollama_client.is_unavailable()
 
 
 async def test_a_role_switch_during_an_outage_still_answers_from_the_rules(client, monkeypatch):
-    fake_gemini(monkeypatch, gexc.ResourceExhausted("429 quota"))
+    fake_ollama.failing(monkeypatch, httpx.ConnectError("connection refused"))
     for kind in ("user", "driver", "admin"):
         _, h = await register(client, kind, f"pf-{kind}@t.test")
         r = await client.post("/api/chat", json={"message": "hello", "sessionId": f"pf-{kind}"}, headers=h)
         assert r.status_code == 200 and r.json()["reply"]
-    gemini_client.reset()
 
 
 # ── small models that promise instead of answering ──────────────────────────
@@ -72,23 +51,9 @@ PROMISES = [
 ]
 
 
-def model_that_says(monkeypatch, text, calls_tool=False):
-    import google.generativeai as genai
-
-    class Model:
-        def __init__(self, *a, **k): ...
-        def generate_content(self, contents, tools=None, **kw):
-            part = SimpleNamespace(function_call=SimpleNamespace(name="", args={}))
-            return SimpleNamespace(candidates=[SimpleNamespace(content=SimpleNamespace(parts=[part]))], text=text)
-    monkeypatch.setattr(config, "GEMINI_API_KEY", "test-key-not-real")
-    monkeypatch.setattr(genai, "configure", lambda **k: None)
-    monkeypatch.setattr(genai, "GenerativeModel", Model)
-    gemini_client.reset()
-
-
 @pytest.mark.parametrize("promise", PROMISES)
 async def test_a_promise_without_a_tool_call_is_never_returned_as_the_answer(monkeypatch, promise):
-    model_that_says(monkeypatch, promise)
+    fake_ollama.says(monkeypatch, promise)
     tools = [{"name": "get_operations_summary", "description": "x", "input_schema": {"type": "object", "properties": {}}}]
     reply = await base.run_tool_agent("system", tools, {"get_operations_summary": None}, "summarize", [], "neutral")
     assert reply is not None and reply != promise and "let me" not in reply.lower() and "just a moment" not in reply.lower()
@@ -97,7 +62,7 @@ async def test_a_promise_without_a_tool_call_is_never_returned_as_the_answer(mon
 
 async def test_a_real_answer_that_merely_uses_similar_words_is_left_alone(monkeypatch):
     text = "Delivery is same-day within Bengaluru. Let me know if you want the fare for a specific route."
-    model_that_says(monkeypatch, text)
+    fake_ollama.says(monkeypatch, text)
     tools = [{"name": "search_knowledge_base", "description": "x", "input_schema": {"type": "object", "properties": {}}}]
     assert await base.run_tool_agent("system", tools, {"search_knowledge_base": None}, "how long", [], "neutral") == text
 
@@ -117,3 +82,19 @@ async def test_rider_asking_for_vehicles_is_not_given_their_parcels_as_vehicles(
     from agents import roles
     msg = roles.intent_denial({"role": "driver"}, "Which vehicles are live right now?")
     assert msg and "Operations" in msg
+
+
+@pytest.mark.parametrize("promise", [
+    "Could you please wait while I look up the status of your parcel with tracking number SHP82290370.",
+    "Please wait a moment while I check.",
+])
+def test_please_wait_is_a_promise_not_an_answer(promise):
+    assert base.is_empty_promise(promise)
+
+
+async def test_yes_after_did_you_mean_looks_up_the_suggested_parcel(client, monkeypatch):
+    from agents import orchestrator
+    assert orchestrator.resolve_did_you_mean("yes", [{"role": "assistant", "content": "I couldn't find SHPA2290370. Did you mean SHP82290370? Say yes and I'll check it."}]) == "Where is SHP82290370?"
+    assert orchestrator.resolve_did_you_mean("yes", [{"role": "assistant", "content": "Anything else?"}]) == "yes"
+    assert orchestrator.resolve_did_you_mean("no thanks", [{"role": "assistant", "content": "Did you mean SHP82290370?"}]) == "no thanks"
+    assert orchestrator.resolve_did_you_mean("yes", []) == "yes"

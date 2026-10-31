@@ -18,7 +18,7 @@ from agents.orchestrator import route_and_reply
 from agents.roles import user_text
 from memory.conversation_memory import append_turn, get_history
 from models.chat_analytics import ChatAnalytics
-from services import gemini_client, metrics
+from services import metrics, ollama_client
 from services.stt import transcribe_audio
 from services.tts import synthesize_speech
 from voice.transcript_fix import fix_transcript
@@ -118,11 +118,11 @@ async def run_voice_turn(
     t1 = time.perf_counter()
     with metrics.timed("db_history_ms"):
         history = await get_history(session_id)
-    budget = gemini_client.budget_override.set(config.GEMINI_VOICE_TIMEOUT_SECONDS)
+    budget = ollama_client.budget_override.set(config.OLLAMA_VOICE_TIMEOUT_SECONDS)
     try:
         result = await route_and_reply(transcript, history, current_user, on_stage=on_stage, session_id=session_id, channel="voice_auto")
     finally:
-        gemini_client.budget_override.reset(budget)
+        ollama_client.budget_override.reset(budget)
     llm_ms = int((time.perf_counter() - t1) * 1000)
 
     t2 = time.perf_counter()

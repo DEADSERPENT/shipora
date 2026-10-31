@@ -34,6 +34,7 @@ from routes.support import router as support_router
 from routes.vehicles import router as vehicles_router
 from routes.voice import router as voice_router
 from voice import warmup
+from services import dispatch, simulator
 from sockets import sio, sweep_stale_forever
 
 logging_config.setup_logging()
@@ -50,12 +51,15 @@ async def lifespan(_app: FastAPI):
         await seed_mock_data()
     warm = asyncio.create_task(warmup.warm_up()) if config.VOICE_WARMUP else None   # background: never delays startup
     sweeper = asyncio.create_task(sweep_stale_forever())  # flips silent vehicles to "stale" and tells watchers
+    dispatcher = asyncio.create_task(dispatch.sweep_forever()) if config.auto_assign_enabled() else None   # matches waiting shipments to agents
+    simulator_task = asyncio.create_task(simulator.run_forever()) if config.simulation_enabled(database.IN_MEMORY) else None   # simulated riders
     try:
         yield
     finally:
         sweeper.cancel()
-        if warm:
-            warm.cancel()
+        for task in (warm, dispatcher, simulator_task):
+            if task:
+                task.cancel()
 
 
 api = FastAPI(

@@ -1,6 +1,6 @@
 """General-purpose ShipBot agent — the orchestrator's fallback branch for
 anything that isn't tracking/issues/support, and for when a specialist
-agent can't run (no Gemini key, tool-call failure, etc).
+agent can't run (Ollama unavailable, tool-call failure, etc).
 
 Owns the system prompt, rule-based knowledge base, and LLM call that used to
 live in routes/chat.py. Relocated (not duplicated) here so agents/orchestrator.py
@@ -215,17 +215,24 @@ def rule_based_reply(msg: str, current_user: dict = None) -> str:
 
 async def handle(message: str, history: list, sentiment: str = "neutral", current_user: dict = None, on_stage=None) -> dict:
     """Three-tier fallback, each tier completely independent of the ones
-    below it: (1) Gemini tool-calling KB search + operations-summary
+    below it: (1) Ollama tool-calling KB search + operations-summary
     lookup — grounds informational/analytics answers in real data rather
-    than freeform recall; (2) the existing get_llm_reply (Gemini plain
+    than freeform recall; (2) the existing get_llm_reply (Ollama plain
     text); (3) the existing rule_based_reply() keyword match, Shipora's
-    original zero-API-key safety net, completely unchanged."""
+    original zero-LLM safety net, completely unchanged."""
     tools = [TOOL_SEARCH_KNOWLEDGE_BASE]
     executors = {"search_knowledge_base": execute_search_knowledge_base}
     if roles.role_of(current_user) == roles.ADMIN:   # company-wide numbers are for Operations only
         tools.append(TOOL_GET_OPERATIONS_SUMMARY)
         executors["get_operations_summary"] = partial(execute_get_operations_summary, current_user=current_user)
     system = GENERAL_SYSTEM_PROMPT + roles.prompt_context(current_user)
+    # Policy and how-to answers (cancelling, fares, passwords, ...) come from Shipora's own knowledge base. A small model that is merely
+    # *offered* the search tool often skips it and invents a policy ("account settings, within a few days"), so the best entry is fetched
+    # up front and handed over as the authoritative answer; the model only has to phrase it.
+    kb = _best_kb_match(roles.user_text(message))
+    if kb:
+        system += ("\n\nShipora's official answer to this question (authoritative; answer from it, and do not add policies, steps, prices, "
+                   "deadlines or contact details that are not in it): " + kb["reply"])
     ops_data = None
     if roles.role_of(current_user) == roles.ADMIN and _OPS_INTENT_RE.search(message):
         # Small local models often announce "let me check" and never call the tool, so for a plain ops-summary request

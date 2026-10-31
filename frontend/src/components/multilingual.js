@@ -1,7 +1,7 @@
 // Multilingual support for ShipBot's 'browser' voice mode (SpeechRecognition +
-// speechSynthesis + Gemini via the existing /api/chat endpoint). NO backend
+// speechSynthesis + the assistant via the existing /api/chat endpoint). NO backend
 // changes anywhere — language steering happens entirely by prefixing the
-// outgoing message text with a directive Gemini reads as part of the user's
+// outgoing message text with a directive the assistant reads as part of the user's
 // turn; see buildLanguageDirective(). general_agent.py's system prompt
 // (already conversational/no-markdown) is untouched.
 //
@@ -9,7 +9,7 @@
 // dynamically auto-detect and switch its own recognition language
 // mid-utterance — .lang must be set before .start() and stays fixed for
 // that utterance. "Auto Detect" therefore captures with a broad-tolerance
-// locale (en-IN) and lets Gemini — not the STT layer — do the actual
+// locale (en-IN) and lets the assistant — not the STT layer — do the actual
 // language understanding/matching from whatever text comes back.
 
 export const LANGUAGES = {
@@ -17,28 +17,28 @@ export const LANGUAGES = {
     key: 'en',
     label: 'English',
     speechLang: 'en-IN',
-    geminiClause: 'English',
+    languageClause: 'English',
     switchConfirmation: "Okay, I'll continue in English.",
   },
   hi: {
     key: 'hi',
     label: 'Hindi',
     speechLang: 'hi-IN',
-    geminiClause: 'Hindi (Devanagari script), even if the user mixes in other languages',
+    languageClause: 'Hindi (Devanagari script), even if the user mixes in other languages',
     switchConfirmation: 'ठीक है, अब मैं हिंदी में बात करूँगा।',
   },
   kn: {
     key: 'kn',
     label: 'Kannada',
     speechLang: 'kn-IN',
-    geminiClause: 'Kannada (ಕನ್ನಡ script), even if the user mixes in other languages',
+    languageClause: 'Kannada (ಕನ್ನಡ script), even if the user mixes in other languages',
     switchConfirmation: 'ಸರಿ, ಈಗ ನಾನು ಕನ್ನಡದಲ್ಲಿ ಮಾತನಾಡುತ್ತೇನೆ.',
   },
   auto: {
     key: 'auto',
     label: 'Auto Detect',
     speechLang: 'en-IN', // capture locale only — SpeechRecognition can't truly auto-detect; see module comment
-    geminiClause: 'the same language or mix of languages the user just used (English, Hindi, Kannada, or a mix) — do not force a translation into a single language',
+    languageClause: 'the same language or mix of languages the user just used (English, Hindi, Kannada, or a mix) — do not force a translation into a single language',
     switchConfirmation: "Okay, I'll auto-detect the language.",
   },
 };
@@ -47,10 +47,10 @@ export const DEFAULT_LANGUAGE = 'auto';
 
 // Fixed-language script enforcement — NOT applied to 'auto', which is
 // explicitly supposed to mirror whatever mix/style the user used. Without
-// this, Gemini tends to mirror the user's own writing style: if the user
+// this, the assistant tends to mirror the user's own writing style: if the user
 // types Romanized Kannada/Hindi (e.g. "kasavin garden hege madodu"), it
 // often replies in Romanized "Kanglish"/"Hinglish" instead of native script,
-// even though the selected language's geminiClause already names the
+// even though the selected language's languageClause already names the
 // script. This is a stronger, explicit override: the selected language wins
 // over whatever script the user typed in, every time.
 const SCRIPT_ENFORCEMENT = {
@@ -75,7 +75,7 @@ export function getRecognitionLang(langKey) {
 
 // The "real-time voice conversation" framing and hard length cap only make
 // sense when the user is actually listening, not reading — applying it to
-// typed text chat would be both misleading to Gemini (it isn't a voice
+// typed text chat would be both misleading to the assistant (it isn't a voice
 // conversation) and an unwanted UX change for text users. mode='text' gets
 // language steering + script enforcement + formatting rules only; mode='voice'
 // additionally gets the short-spoken-reply framing.
@@ -85,7 +85,7 @@ Keep replies to about 3-4 spoken sentences.
 Avoid long explanations unless the user explicitly asks for more detail.
 End naturally instead of reading a long block of text.`;
 
-/** Prepends a language/formatting instruction block Gemini reads as part of
+/** Prepends a language/formatting instruction block the assistant reads as part of
  * the user's turn — the mechanism for language steering AND (in 'voice'
  * mode) spoken-style tone, without any backend change (general_agent.py's
  * system prompt is untouched). The chat UI displays only the clean
@@ -94,7 +94,7 @@ End naturally instead of reading a long block of text.`;
  * text chat never gets the spoken-length constraint. */
 export function buildLanguageDirective(langKey, transcript, mode = 'voice') {
   const lang = LANGUAGES[langKey] || LANGUAGES[DEFAULT_LANGUAGE];
-  let instruction = `Reply naturally in ${lang.geminiClause}.
+  let instruction = `Reply naturally in ${lang.languageClause}.
 Do not use markdown.
 Do not use bullet points.
 Do not use numbered lists.
@@ -121,7 +121,7 @@ Avoid sounding like documentation.`;
 // English" is very often transcribed as "स्विच टू इंग्लिश", not the Latin
 // word "switch". Missing the Devanagari/Kannada transliteration of "switch"
 // itself (not just of the language name) was the root cause of switch
-// commands silently falling through to Gemini.
+// commands silently falling through to the assistant.
 const SWITCH_TRIGGER_WORDS = [
   'switch', 'continue', 'speak', 'talk', 'change to',
   'स्विच', 'बात', 'बदल', 'कंटिन्यू', // Hindi: "switch", "talk"/"speak", "change", "continue"
@@ -130,7 +130,7 @@ const SWITCH_TRIGGER_WORDS = [
 const LANGUAGE_NAME_HINTS = {
   // 'अंग्रेज़ी'/'अंग्रेजी' are the same word (nukta vs. no-nukta spelling of
   // "English") — both spellings occur in the wild, confirmed directly from
-  // Gemini's own reply text ("...अब अंग्रेज़ी में...") which the previous
+  // the assistant's own reply text ("...अब अंग्रेज़ी में...") which the previous
   // hint list didn't cover at all.
   en: ['english', 'इंग्लिश', 'अंग्रेज़ी', 'अंग्रेजी', 'ಇಂಗ್ಲಿಷ್'],
   hi: ['hindi', 'हिंदी', 'हिन्दी', 'ಹಿಂದಿ'],
@@ -162,7 +162,7 @@ function containsWord(haystack, word) {
 /** Returns the target language key ('en'|'hi'|'kn') if `transcript` is a
  * language-switch command, else null. Deliberately conservative (trigger +
  * language name both required, except for very short utterances) — false
- * negatives just mean the turn goes to Gemini as a normal message, which is
+ * negatives just mean the turn goes to the assistant as a normal message, which is
  * the safe failure mode. */
 export function detectLanguageSwitchCommand(transcript) {
   const lower = (transcript || '').toLowerCase();

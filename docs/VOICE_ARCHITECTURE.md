@@ -34,8 +34,8 @@ voice/pipeline.py: run_voice_turn()
   ├─▶ memory/conversation_memory.py.get_history(sessionId)   (MongoDB, see below)
   │
   ├─▶ agents/orchestrator.py: route_and_reply()   [emits voice:stage "thinking"]
-  │     ONE Gemini forced-function-call, returns {agent, sentiment}
-  │     falls back to keyword matching if GEMINI_API_KEY is unset
+  │     ONE structured Ollama call (JSON schema), returns {agent, sentiment}
+  │     falls back to keyword matching if Ollama is unreachable
   │         │
   │         ▼
   │   ┌───────────────┬──────────────────┬────────────────┬────────────────┬───────────┐
@@ -81,9 +81,9 @@ voice/pipeline.py: run_voice_turn()
 | **Architecture of Voice Agents** | This document + `agents/orchestrator.py` + `voice/pipeline.py` | Router-classifies-then-dispatches: one cheap classification call picks a specialist, each specialist gets a scoped prompt + real tool(s) from `tools/`, with a shared 3-tier fallback (`general_agent`) so nothing ever produces a dead end. `voice/pipeline.py` is the one place the STT→memory→orchestrator→TTS sequence is assembled; `routes/chat.py`/`routes/voice.py` are thin HTTP wrappers around it. |
 | **STT Models** | `services/stt.py` | **Three providers**, chosen by `STT_PROVIDER`: `openai` (default, `whisper-1`), `faster_whisper` (local, CTranslate2) and `onnx_local` (local Whisper on ONNX Runtime — for machines where CTranslate2 can't load); the local ones need no API key and are an optional install, see `docs/LOCAL_VOICE.md`. Structured as an `STTProvider` abstract base class; adding another provider means writing one new class and adding it to `_PROVIDERS`, without touching `transcribe_audio()` or any caller. `onnx_local` has been run end to end on real audio on one machine; `faster_whisper` is tested with mocks only. No accuracy benchmark exists for either. |
 | **TTS Models** | `services/tts.py` | **Two providers**, chosen by `TTS_PROVIDER`: `openai` (default, `tts-1`, returns MP3) and `piper` (local, no API key, returns WAV — English is the tested language). Same `TTSProvider` structure and one-class-to-extend story. `/api/voice/chat` reports the real format in `audioMimeType`. Replies are trimmed to 800 chars before synthesis. |
-| **LLMs in Voice AI** | `services/llm.py` (Gemini-only) + `agents/base.py` (Gemini tool-calling) | Gemini is the only LLM anywhere in the codebase — `services/llm.py`'s *text-only* call (used by `general_agent`'s tier 1 fallback) and the specialist agents' *tool-calling* (`agents/base.py`, gated on `GEMINI_API_KEY`) both go through Gemini. `OPENAI_API_KEY` still exists but is only used by the OpenAI STT/TTS providers (`services/stt.py`/`services/tts.py`) — and only when `STT_PROVIDER`/`TTS_PROVIDER` is `openai` — a completely separate code path. |
+| **LLMs in Voice AI** | `services/ollama_client.py` (+ `services/llm.py`, `agents/base.py`) | A local Ollama model is the only LLM anywhere in the codebase: classification, the specialist agents' *tool-calling* (`agents/base.py`) and the text-only fallback tier (`services/llm.py`) all go through it. No cloud LLM and no LLM API key. `OPENAI_API_KEY` exists only for the optional OpenAI STT/TTS providers (`services/stt.py`/`services/tts.py`) — a completely separate code path. |
 | **Speech Analytics** | `models/chat_analytics.py`, `routes/analytics.py`, `frontend/src/components/ChatAnalyticsTab.js` | Every turn logs which agent handled it, sentiment, per-stage latency (STT/LLM/TTS/total), and whether the reply was AI-generated or a rule-based fallback — surfaced on an admin-only dashboard. |
-| **Multi-Agent Orchestration** | `agents/orchestrator.py` + `agents/{tracking,complaints,schedule,support}_agent.py` + `tools/` | Real dispatch to specialists, each with its own system prompt and one-or-more DB-backed tools (see "Tools" below) — not prompt-stuffing. Capped at 2 Gemini calls per specialist turn (`agents/base.py`). |
+| **Multi-Agent Orchestration** | `agents/orchestrator.py` + `agents/{tracking,complaints,schedule,support}_agent.py` + `tools/` | Real dispatch to specialists, each with its own system prompt and one-or-more DB-backed tools (see "Tools" below) — not prompt-stuffing. Capped at 2 model calls per specialist turn (`agents/base.py`). |
 
 ## Tools (`tools/`)
 
@@ -112,41 +112,30 @@ machine** — there's no server-side flag that blocks the tool call; it relies
 on conversation memory (below) plus instruction-following. Worth knowing if
 you're evaluating how hard this guarantee actually is.
 
-## Gemini owns classification, tool-calling, and summarization
+## Ollama owns classification, tool-calling, and summarization
 
-Both LLM surfaces go through Gemini exclusively:
+Every LLM surface goes through the local Ollama model (`services/ollama_client.py`, model set by `OLLAMA_MODEL`, default
+`qwen2.5:3b` — fully resident on a 6 GB GPU):
 
-- The **text** LLM path (`services/llm.py`, used by `general_agent`'s tier 1
-  fallback) calls `_gemini_reply` directly — no provider branching anymore.
-- The **tool-calling / multi-agent** path (`agents/base.py`,
-  `agents/orchestrator.py`) also uses Gemini's native function-calling
-  (`google-generativeai`'s `tools=`/`tool_config` params), gated on
-  `GEMINI_API_KEY`.
+- The **text** LLM path (`services/llm.py`, used by `general_agent`'s fallback tier) calls `ollama_client.reply`.
+- The **tool-calling / multi-agent** path (`agents/base.py`, `agents/orchestrator.py`) uses Ollama's native tool calling and
+  structured (JSON-schema) output, so the classifier can only return a valid agent name.
 
-`OPENAI_API_KEY` still exists in `config.py`, but only for the OpenAI STT/TTS
-providers (`services/stt.py`/`services/tts.py`, Whisper and `tts-1`), and only
-while those providers are selected — a completely separate code path with no
-bearing on reasoning/classification/tool-calling. The local providers
-(`faster_whisper`/`onnx_local`, `piper`) need no API key at all.
+`OPENAI_API_KEY` still exists in `config.py`, but only for the OpenAI STT/TTS providers (`services/stt.py`/`services/tts.py`,
+Whisper and `tts-1`), and only while those providers are selected — a completely separate code path with no bearing on
+reasoning/classification/tool-calling. The local providers (`faster_whisper`/`onnx_local`, `piper`) need no API key at all.
 
-Tool schemas in `tools/*.py` stay in the original `{"name", "description",
-"input_schema"}` shape everywhere — only `agents/base.py`'s call boundary
-renames `input_schema` to Gemini's `parameters` key; Gemini's
-`FunctionDeclaration` recursively converts the JSON-Schema body itself
-(`type` → `type_`, etc.), so no tool file needed reshaping.
+Tool schemas in `tools/*.py` keep the `{"name", "description", "input_schema"}` shape; `ollama_client.chat()` maps `input_schema`
+to Ollama's `parameters` at the call boundary.
 
-`agents/base.py:run_tool_agent()` accepts a *list* of tools and an
-`executors` dict keyed by tool name (not one fixed tool) — `complaints_agent`
-offers `get_complaint_status`, `create_complaint`, and `list_complaints_admin`
-in a single call and lets the model pick. The loop is capped at exactly 2
-Gemini calls per turn: one to decide+invoke a tool (or answer directly), one
-to produce the final grounded text answer after the tool result comes back.
+`agents/base.py:run_tool_agent()` accepts a *list* of tools and an `executors` dict keyed by tool name — `complaints_agent` offers
+`get_complaint_status`, `draft_complaint` and `list_complaints_admin` in a single call and lets the model pick. The loop is capped
+at two model calls per turn (one to decide+invoke a tool or answer directly, one to phrase the grounded answer) and two tool calls.
+A tool the role was never offered, malformed arguments, a tool that exceeds `TOOL_TIMEOUT_SECONDS` (30 s) or a reply that is raw
+tool-call JSON never reaches the user: the turn falls back to the database / rule-based answer.
 
-The classifier (`agents/orchestrator.py:_classify_sync`) forces a single
-function call via `tool_config={"function_calling_config": {"mode": "ANY",
-"allowed_function_names": ["classify"]}}` — Gemini's closest equivalent to
-Anthropic's old `tool_choice={"type": "tool", "name": ...}`. `_keyword_classify`
-remains the fallback when `GEMINI_API_KEY` is unset or the call errors.
+The classifier (`agents/orchestrator.py:classify` -> `ollama_client.classify`) asks for `{agent, sentiment}` against a JSON schema.
+`_keyword_classify` remains the fallback when Ollama is unreachable or returns something out of schema.
 
 ## Conversation memory (`memory/`)
 
@@ -269,14 +258,13 @@ scoped to a `voice:{sessionId}` room (never broadcast), and
 `agents/base.py:run_tool_agent()` accepts an `on_stage(stage, detail)`
 callback threaded down from the orchestrator, called right when a tool is
 about to execute (with the real tool name) and right before the final LLM
-call. Because `_run_sync` runs inside `asyncio.to_thread` (a worker thread
-with no event loop), `on_stage`'s implementation in `voice/pipeline.py`
-bridges back via `asyncio.run_coroutine_threadsafe` — the one non-obvious
-wiring detail in the whole feature, commented inline where it happens.
+call. The Ollama client is async and runs on the application's event loop, so `on_stage` is called
+directly from the request's own task; `voice/pipeline.py` schedules the Socket.IO emit with `asyncio.run_coroutine_threadsafe`,
+which is legal from either a task or a worker thread.
 
-**One nuance:** on the zero-`GEMINI_API_KEY` fallback path, no
+**One nuance:** when Ollama is unreachable, no
 `tool_execution`/`generating_response` events fire at all (the tool-calling
-attempt returns `None` before ever touching the Gemini API). The frontend
+attempt returns `None` before any tool runs). The frontend
 handles this by treating the HTTP response itself as stronger ground truth
 than any socket event: when `/api/voice/chat` resolves, `ChatBot.js` force-
 transitions straight to `GENERATING_RESPONSE` (bypassing the normal
@@ -290,38 +278,35 @@ The three stages degrade independently:
 
 | Stage | Works when | When it can't run |
 |---|---|---|
-| Reasoning (Gemini) | `GEMINI_API_KEY` is set and Gemini is reachable | Keyword-routed, rule-based KB reply (`source: "builtin"`); no tool-calling, so no live shipment/vehicle/issue lookups. This also applies when Gemini is *down*: see below |
+| Reasoning (Ollama) | `ollama serve` is reachable and `OLLAMA_MODEL` is pulled | Keyword-routed reply; tracking questions with a tracking number are still answered from the database, everything else from the rule-based KB (`source: "builtin"`). No tool-calling, so no other live lookups. See below |
 | STT | `openai`: `OPENAI_API_KEY` set. `faster_whisper` / `onnx_local`: package + model present and loadable (no key) | `/api/voice/chat` returns `422` — "voice isn't available right now". The same `422` is returned for a silent/empty recording |
 | TTS | `openai`: `OPENAI_API_KEY` set. `piper`: package + voice file present (no key) | The reply is returned as text with no audio (`audioBase64: null`); the conversation continues |
 
-So, for example: with no API keys at all, `STT_PROVIDER=onnx_local` + `TTS_PROVIDER=piper` still gives a working voice
-loop with rule-based replies; adding `GEMINI_API_KEY` upgrades the reasoning to full multi-agent routing with tool-calling
+So, for example: with no API keys and no Ollama, `STT_PROVIDER=onnx_local` + `TTS_PROVIDER=piper` still gives a working voice
+loop with rule-based replies; running Ollama upgrades the reasoning to full multi-agent routing with tool-calling
 and live stage events. With the default `openai` providers and no `OPENAI_API_KEY`, text chat works but voice returns `422`.
 Setup for the local providers: `docs/LOCAL_VOICE.md`.
 
-**Gemini outages.** Every Gemini call has a hard time budget (`GEMINI_TIMEOUT_SECONDS`, default 20 s, with retries only inside
-it), because the library's own default retries for up to 10 minutes and one turn chains several calls. After an outage-type
-failure (timeout, no network/DNS, 5xx, quota) all Gemini calls are skipped for `GEMINI_COOLDOWN_SECONDS` (default 30 s) and the
-turn uses the built-in fallbacks straight away — so a dead network costs one budget, once, not one per call. A successful
-call clears the cooldown; request-level errors (a bad argument, a slow *database* tool) do not trip it. Measured with Gemini
-unreachable and an 8 s budget: first request 10 s (then fallback), requests in the cooldown 2 s, a voice turn 4.6 s.
-Details: `services/gemini_client.py`.
+**Ollama outages.** Every Ollama call has a hard time budget (`OLLAMA_TIMEOUT_SECONDS`, default 30 s; voice turns use
+`OLLAMA_VOICE_TIMEOUT_SECONDS`, default 8 s). After an outage-type failure (server down, timeout, 5xx) all Ollama calls are skipped
+for `OLLAMA_COOLDOWN_SECONDS` (default 30 s) and the turn uses the built-in fallbacks straight away — so a dead server costs one
+failed call, once, not one per call. A successful call clears the cooldown; request-level errors (a 4xx such as a model that is not
+installed, a slow *database* tool) do not trip it. There is no second LLM to switch to: the fallbacks are keywords, the database
+and the rule-based knowledge base. Details: `services/ollama_client.py`.
 
 **Dates.** Tools that return dates (`get_shipment_status`, `get_my_shipments`) also return ready-made customer-facing text
 (`estimatedDeliveryText`, `pickupScheduledText`, `deliveredOnText`, e.g. "Monday, 12 October 2026") and the agent prompts
 forbid "today"/"tomorrow"/"in N days": the model does not know today's date, and once said "by today" for a delivery 5 days away.
 
-Every Gemini call site (`agents/orchestrator.py:classify()`,
-`agents/base.py:run_tool_agent()`, `services/llm.py:_gemini_reply()`) checks
-`config.GEMINI_API_KEY in config.PLACEHOLDER_VALUES` before attempting a
-call — the same convention used throughout. `OPENAI_API_KEY` only gates the
-OpenAI STT/TTS providers, not any reasoning path.
+Every LLM call site (`agents/orchestrator.py:classify()`, `agents/base.py:run_tool_agent()`, `services/llm.py:get_llm_reply()`)
+checks `ollama_client.is_unavailable()` before calling, so an outage never adds latency to the rest of the turn. `OPENAI_API_KEY`
+only gates the OpenAI STT/TTS providers, not any reasoning path.
 
 ## Verification and resilience (added)
 
 * `backend-fastapi/scripts/verify_sandwich.py` exercises each stage with the real providers and the full
   `/api/voice/chat` round trip; `tests/test_voice_sandwich.py` covers the same flow in CI with STT/TTS stubbed.
-* Voice turns use a tighter LLM budget (`GEMINI_VOICE_TIMEOUT_SECONDS`, default 8 s) than chat.
+* Voice turns use a tighter LLM budget (`OLLAMA_VOICE_TIMEOUT_SECONDS`, default 8 s) than chat.
 * If the LLM is unavailable, a tracking question containing a tracking number is still answered from the database
   (`agents/tracking_agent.py: fallback`), reported with `source: "builtin"`.
 * Spelled tracking numbers are extracted tolerantly, and a mis-heard one is repaired only against the signed-in

@@ -70,7 +70,6 @@ def test_exceptions_are_logged_with_type_and_traceback_but_redacted():
     ("abc123tokenvalue", "Authorization: Bearer abc123tokenvalue"),
     ("p@ssw0rd!", "login password=p@ssw0rd! failed"),
     ("p@ssw0rd!", '{"password": "p@ssw0rd!", "email": "a@b.co"}'),
-    ("AIzaSyD-fake_key_0123456789abcdefghij", "gemini key AIzaSyD-fake_key_0123456789abcdefghij rejected"),
     ("sk-proj-abcdefghijklmnop12345", "openai sk-proj-abcdefghijklmnop12345 rejected"),
     ("S3cr3tPw", "connecting to mongodb+srv://" "shipora:S3cr3tPw@cluster0.mongodb.net/shipora"),
     ("my-api-key-value", "api_key=my-api-key-value"),
@@ -165,7 +164,6 @@ async def test_unhandled_errors_return_a_safe_body_and_are_logged_in_full(logs):
 
 async def test_nothing_sensitive_reaches_the_logs_across_a_realistic_session(client, logs, monkeypatch):
     import config
-    monkeypatch.setattr(config, "GEMINI_API_KEY", "AIzaSyD-marker_gemini_key_0123456789")
     monkeypatch.setattr(config, "OPENAI_API_KEY", "sk-marker-openai-key-0123456789")
     pw, secret_chat = "My-Sup3r-Secret-Pass!", "MARKER-PRIVATE-CHAT-TEXT-98765"
     reg = await client.post("/api/auth/register/user", json={"name": "Priv Person", "email": "priv.person@t.test", "password": pw,
@@ -180,7 +178,7 @@ async def test_nothing_sensitive_reaches_the_logs_across_a_realistic_session(cli
     await client.post("/api/chat", json={"message": secret_chat}, headers=h)
     raw = logs.raw()
     for forbidden in (pw, "wrong-" + pw, "Another-Secret-1!", token, "priv.person@t.test", "9123456789", "42 Private Road",
-                      secret_chat, "AIzaSyD-marker", "sk-marker-openai", "Authorization", "eyJ"):
+                      secret_chat, "sk-marker-openai", "Authorization", "eyJ"):
         assert forbidden not in raw, f"leaked into logs: {forbidden}"
     assert logs.events("login_ok") and logs.events("login_failed")     # ...while still being useful
 

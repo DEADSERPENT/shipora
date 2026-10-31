@@ -19,7 +19,49 @@ Dates: always quote dates exactly as given in the *Text fields (estimatedDeliver
 Tone: friendly, concise. Keep responses under 120 words."""
 
 
-async def handle(message: str, history: list, sentiment: str, current_user: dict = None, on_stage=None) -> str:
+# "Where is my parcel?" in the three languages the chat widget offers (English, Hindi, Kannada).
+_MY_PARCEL = re.compile(r"\b(?:my|where)\b.*\b(?:parcel|package|shipment|order)s?\b|(?:पार्सल|पैकेज|शिपमेंट|ऑर्डर)|(?:ಪಾರ್ಸೆಲ್|ಪಾರ್ಸಲ್|ಪ್ಯಾಕೇಜ್|ಶಿಪ್‌ಮೆಂಟ್)", re.I)
+_ROUTE = re.compile(r"\b(?:my route|my deliver\w*|what'?s next|next deliver\w*|which delivery|(?:what|which) .{0,20}(?:pending|assigned)|assigned to me|on my route)\b", re.I)
+
+
+async def direct(message: str, current_user: dict = None) -> str:
+    """Questions whose whole answer is the caller's own database rows need no model: a rider asking for their route gets the exact list
+    (tracking numbers included), instantly. Returns None for everything else."""
+    if roles.role_of(current_user) == roles.DRIVER and not extract_tracking_number(message) and _ROUTE.search(message):
+        return await _rider_route_summary(current_user)
+    return None
+
+
+_HOWTO = re.compile(r"^\W*(?:how|can i|could i|do i|does|is it possible|what (?:is|are|if))\b", re.I)
+def is_howto(message: str) -> bool:
+    """"How do I…", "Can I cancel my shipment?", "What if…": a question about the service, not a lookup of the caller's own parcels."""
+    return bool(_HOWTO.search(message))
+
+
+_RAW_STATUS = re.compile(r"\b[A-Z]{2,}_[A-Z_]{2,}\b")          # OUT_FOR_DELIVERY, IN_TRANSIT...: a database enum, not a sentence
+
+
+async def handle(message: str, history: list, sentiment: str, current_user: dict = None, on_stage=None, meta: dict = None) -> str:
+    ran = []
+    reply = await _handle(message, history, sentiment, current_user, on_stage, ran)
+    if reply is None:
+        return None
+    ref = extract_tracking_number(message)
+    grounded = None
+    if not ran and not ref and not _HOWTO.search(message) and roles.role_of(current_user) != roles.DRIVER:
+        # "Where is my parcel?" answered without looking anything up is a guess: answer from the caller's own database rows instead.
+        grounded = await fallback(message, current_user)
+    elif ref and "get_shipment_status" in ran and (ref not in re.sub(r"\W", "", reply.upper()) or _RAW_STATUS.search(reply)):
+        # A lookup by number whose answer never names the parcel, or shows a raw status code, is not fit to read out: state the facts.
+        grounded = await fallback(message, current_user)
+    if grounded:
+        if meta is not None:
+            meta["source"] = "builtin"
+        return grounded
+    return reply
+
+
+async def _handle(message, history, sentiment, current_user, on_stage, ran) -> str:
     tools = [TOOL_GET_VEHICLE_STATUS, TOOL_GET_SHIPMENT_STATUS, TOOL_GET_MY_SHIPMENTS]
     executors = {
         "get_vehicle_status": partial(execute_get_vehicle_status, current_user=current_user),
@@ -41,7 +83,7 @@ async def handle(message: str, history: list, sentiment: str, current_user: dict
     else:
         tools = [TOOL_GET_SHIPMENT_STATUS, TOOL_GET_MY_SHIPMENTS]   # customers and visitors never get the live fleet list
         executors.pop("get_vehicle_status")
-    return await run_tool_agent(SYSTEM_PROMPT + roles.prompt_context(current_user), tools, executors, message, history, sentiment, on_stage=on_stage)
+    return await run_tool_agent(SYSTEM_PROMPT + roles.prompt_context(current_user), tools, executors, message, history, sentiment, on_stage=on_stage, ran_out=ran)
 
 
 async def _rider_route_summary(current_user: dict) -> str:
@@ -71,7 +113,7 @@ async def fallback(message: str, current_user: dict = None) -> str:
     if not ref:
         if is_rider and re.search(r"\b(route|deliver\w*|next|pending|assign\w*|today)\b", message, re.I):
             return await _rider_route_summary(current_user)
-        if roles.role_of(current_user) == roles.USER and re.search(r"\b(my|where)\b.*\b(parcel|package|shipment|order)s?\b", message, re.I):
+        if roles.role_of(current_user) == roles.USER and _MY_PARCEL.search(message) and not _HOWTO.search(message):
             return await _customer_summary(current_user)      # their own, from the database, when no model is available
         return None
     # Same rule as the tool path: a rider only ever sees shipments assigned to them.

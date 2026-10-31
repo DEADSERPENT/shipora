@@ -25,7 +25,6 @@ _REDACTIONS = [
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=\-]+"), "Bearer [REDACTED]"),
     (re.compile(r"\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}"), "[REDACTED-JWT]"),
     (re.compile(r"(mongodb(?:\+srv)?://)[^/@\s]+@"), r"\1[REDACTED]@"),
-    (re.compile(r"\bAIza[0-9A-Za-z_\-]{20,}"), "[REDACTED-API-KEY]"),
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}"), "[REDACTED-API-KEY]"),
     # key=value / key: value / "key": "value" for sensitive key names
     (re.compile(r"(?i)([\"']?(?:password|passwd|pwd|secret|token|api[_\-]?key|authorization)[\"']?\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;&}]+)"),

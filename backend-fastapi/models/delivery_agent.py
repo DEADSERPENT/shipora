@@ -22,6 +22,7 @@ class DeliveryAgent(Document):
     licenseNo: str
     assignedArea: str
     availability: Literal["available", "on_delivery", "off_duty"] = "available"
+    isSimulated: bool = False  # driven by services/simulator.py instead of a person
     role: str = "driver"  # wire-level role string kept as "driver" for JWT/frontend compatibility
     createdAt: Optional[datetime] = None
     updatedAt: Optional[datetime] = None

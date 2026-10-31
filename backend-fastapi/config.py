@@ -34,15 +34,13 @@ MAX_PARCEL_KG = float(os.getenv("MAX_PARCEL_KG", "20"))  # a two-wheeler's carry
 ETA_BASE_MINUTES = float(os.getenv("ETA_BASE_MINUTES", "30"))  # rider assignment + pickup
 ETA_MINUTES_PER_KM = float(os.getenv("ETA_MINUTES_PER_KM", "4"))
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")  # "gemini" (default) or "ollama" (local) — classification, tool-calling and services/llm.py's fallback tier
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # STT/TTS only (see services/stt.py/tts.py) — not used for any LLM/chat path
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # STT/TTS reuse OPENAI_API_KEY above — no separate key needed.
 STT_PROVIDER = os.getenv("STT_PROVIDER", "openai")
 TTS_PROVIDER = os.getenv("TTS_PROVIDER", "openai")
 TTS_VOICE = os.getenv("TTS_VOICE", "nova")  # nova/shimmer read as female; alloy/echo/onyx/fable read male or neutral
-# Local LLM via Ollama (LLM_PROVIDER=ollama): runs on the GPU, nothing leaves the machine. Needs a model with tool support.
+# The only LLM: a local Ollama model (classification, tool-calling, plain-text fallback). Runs on the GPU, nothing leaves the machine. Needs a model with tool support.
 CLASSIFIER_MODE = os.getenv("CLASSIFIER_MODE", "llm").strip().lower()   # llm | hybrid (keyword fast-path when decisive, else LLM)
 VOICE_WARMUP = os.getenv("VOICE_WARMUP", "true").strip().lower() not in ("0", "false", "no", "off")   # load STT/TTS/LLM at startup
 VOICE_MAX_SPOKEN_CHARS = int(os.getenv("VOICE_MAX_SPOKEN_CHARS", "420"))   # spoken replies stop at a sentence boundary; the chat bubble keeps the full text
@@ -54,9 +52,8 @@ OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "30"))
 # (measured: 13 s per turn instead of 1.7 s). Our prompts are a few hundred tokens.
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")             # keep the model resident on the GPU between turns
-GEMINI_VOICE_TIMEOUT_SECONDS = float(os.getenv("GEMINI_VOICE_TIMEOUT_SECONDS", "8"))  # tighter per-call budget on the voice channel: a caller will not wait 20 s
-GEMINI_TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "20"))  # hard budget per Gemini call (retries happen inside it) - see services/gemini_client.py
-GEMINI_COOLDOWN_SECONDS = float(os.getenv("GEMINI_COOLDOWN_SECONDS", "30"))  # after an outage-type failure, skip Gemini for this long and use the fallbacks
+OLLAMA_VOICE_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_VOICE_TIMEOUT_SECONDS", "8"))  # tighter per-call budget on the voice channel: a caller will not wait 30 s
+OLLAMA_COOLDOWN_SECONDS = float(os.getenv("OLLAMA_COOLDOWN_SECONDS", "30"))  # after an outage-type failure (down, timeout, 5xx) skip Ollama for this long and use the fallbacks
 VOICE_MAX_UPLOAD_BYTES = int(os.getenv("VOICE_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
 
 # Local, open-source voice providers (STT_PROVIDER=faster_whisper / TTS_PROVIDER=piper). Optional:
@@ -160,6 +157,44 @@ def bcrypt_rounds() -> int:
         return max(4, min(int(os.environ.get("BCRYPT_ROUNDS", "12")), 15))
     except ValueError:
         return 12
+
+
+def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    try:
+        v = float(os.environ.get(name, default))
+    except ValueError:
+        return default
+    return v if v >= minimum else default
+
+
+def auto_assign_enabled() -> bool:
+    """New shipments are given a delivery agent automatically (services/dispatch.py). Operations can still reassign by hand."""
+    return os.environ.get("AUTO_ASSIGN_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+def auto_assign_delay_seconds() -> float:
+    return _env_float("AUTO_ASSIGN_DELAY_SECONDS", 3.0)          # a beat of "assigning a rider…" before the match shows up
+
+
+def simulation_enabled(in_memory_db: bool) -> bool:
+    """Simulated delivery agents that pick up and deliver shipments by themselves (services/simulator.py). On by default only on the
+    throw-away in-memory database; against a real database it must be asked for explicitly with SIMULATION_ENABLED=true."""
+    raw = os.environ.get("SIMULATION_ENABLED")
+    if raw is None or not raw.strip():
+        return in_memory_db and not is_production()
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def sim_speed() -> float:
+    return _env_float("SIM_SPEED", 15.0, 1.0)      # 15 = a 25 km/h rider covers ground 15 times faster than the clock
+
+
+def sim_tick_seconds() -> float:
+    return _env_float("SIM_TICK_SECONDS", 2.0, 0.2)
+
+
+def sim_fleet_size() -> int:
+    return int(_env_float("SIM_FLEET_SIZE", 6, 0))
 
 
 def gps_stale_after_seconds() -> int:

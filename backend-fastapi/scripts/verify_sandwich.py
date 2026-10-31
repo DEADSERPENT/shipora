@@ -49,7 +49,7 @@ def execution_note() -> str:
         stt_where = "cloud"
     else:
         stt_where = config.ONNX_STT_DEVICE.upper()
-    llm_where = "Ollama (GPU if the model fits in VRAM)" if config.LLM_PROVIDER == "ollama" else "Gemini cloud"
+    llm_where = f"Ollama {config.OLLAMA_MODEL} (GPU if the model fits in VRAM)"
     tts_where = "cloud" if config.TTS_PROVIDER == "openai" else "CPU"
     return f"STT {stt_where}; LLM {llm_where}; TTS {tts_where}"
 
@@ -78,7 +78,7 @@ async def main(argv=None) -> int:
         stages.append({"stage": name, "ok": bool(ok), "detail": detail, "ms": ms})
         say(f"{'PASS' if ok else 'FAIL'}  {name:<34} {f'{ms:>6} ms  ' if ms is not None else '           '}{detail}")
 
-    say(f"Providers: STT={config.STT_PROVIDER}  TTS={config.TTS_PROVIDER}  LLM={config.LLM_PROVIDER}{'/' + config.OLLAMA_MODEL if config.LLM_PROVIDER == 'ollama' else ''}  router={config.CLASSIFIER_MODE}\n")
+    say(f"Providers: STT={config.STT_PROVIDER}  TTS={config.TTS_PROVIDER}  LLM=ollama/{config.OLLAMA_MODEL}  router={config.CLASSIFIER_MODE}\n")
 
     await init_beanie(database=AsyncMongoMockClient()["verify"], document_models=DOCUMENT_MODELS)
     cust = Customer(name="Verify Cust", email="v@verify.test", password="x", phone="9880000010", address="1 Test St",

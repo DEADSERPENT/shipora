@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 import config
 import ratelimit
 from auth_utils import get_current_user, require_role
-from services import booking, geo, idempotency, pricing
+from services import booking, dispatch, geo, idempotency, pricing
 from models.customer import Customer, Location
 from models.delivery_agent import DeliveryAgent
 from models.shipment import ParcelDetails, Party, Shipment, ShipmentStatus
@@ -130,6 +130,7 @@ async def _create_shipment(body: CreateShipmentBody, current_user: dict, scope: 
         raise _http(err)
     if scope:
         await idempotency.complete(scope, shipment.id)
+    dispatch.schedule(shipment.id)         # an agent is matched automatically a moment from now (AUTO_ASSIGN_ENABLED)
     return _out(shipment, {}, current_user)
 
 

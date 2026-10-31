@@ -7,7 +7,7 @@ ShipBot's voice pipeline is STT → agents → TTS (see `VOICE_ARCHITECTURE.md`)
 | STT | OpenAI Whisper API (`whisper-1`) | `STT_PROVIDER=faster_whisper` or `onnx_local` |
 | TTS | OpenAI TTS (`tts-1`) → **MP3** | `TTS_PROVIDER=piper` → **WAV** |
 
-The reasoning layer is unchanged: Gemini still does classification and tool-calling. The OpenAI providers are
+The reasoning layer is a local Ollama model, which does classification and tool-calling. The OpenAI providers are
 untouched; the two stages can be mixed (e.g. local STT with OpenAI TTS).
 
 ## Which local STT?
@@ -117,7 +117,7 @@ registers their DLL folders itself. If the CUDA libraries are missing or the mod
 `stt_gpu_fallback` and continues on CPU (`int8`), so voice never stops working because of a driver problem.
 
 Measured on an RTX 3060 Laptop GPU (6 GB), Whisper `small`, 4-second clip: **~290 ms on GPU vs ~3,200 ms on CPU** (same transcript).
-Ollama (`LLM_PROVIDER=ollama`) uses the GPU by itself; check with `ollama ps` (PROCESSOR should read `100% GPU`). A model that does
+Ollama uses the GPU by itself; check with `ollama ps` (PROCESSOR should read `100% GPU`). A model that does
 not fit in free VRAM (e.g. `qwen3:8b` on 6 GB while other things hold memory) is split across CPU and GPU and becomes several
 times slower — `qwen2.5:3b` stays fully resident. Piper and the ONNX STT provider run on CPU.
 

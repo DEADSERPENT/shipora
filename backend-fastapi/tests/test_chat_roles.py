@@ -1,10 +1,10 @@
 """ShipBot is role-aware on the server: the profile the widget renders, which specialists each role reaches, and which
-data tools each role is offered. Gemini is faked; routing, tools and database are real."""
+data tools each role is offered. The model is faked; routing, tools and database are real."""
 import pytest
 
 from agents import orchestrator, roles, tracking_agent, general_agent
 from tests.conftest import register
-from tests.test_tracking_agent_my_shipments import gemini_calls, make_shipment  # noqa: F401  (fixture re-export)
+from tests.test_tracking_agent_my_shipments import ollama_calls, make_shipment  # noqa: F401  (fixture re-export)
 
 pytestmark = pytest.mark.anyio
 
@@ -41,8 +41,8 @@ async def test_driver_asking_to_file_an_issue_is_told_who_does_that(client, monk
     assert "Operations" in out["reply"] and out["source"] == "builtin"
 
 
-async def test_driver_sees_only_their_own_assignments(client, gemini_calls):
-    plan, captured = gemini_calls
+async def test_driver_sees_only_their_own_assignments(client, ollama_calls):
+    plan, captured = ollama_calls
     _, ch = await register(client, "user", "cust-r@t.test")
     mine, ah = await register(client, "driver", "rider-mine@t.test")
     other, _ = await register(client, "driver", "rider-other@t.test")

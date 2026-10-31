@@ -9,8 +9,10 @@ from pathlib import Path
 # Must be set before `config` is imported (python-dotenv does not override
 # variables that already exist in the environment).
 os.environ["MONGO_URI"] = "mongodb://127.0.0.1:1/shipora-test"
-os.environ["GEMINI_API_KEY"] = ""
+os.environ["OLLAMA_URL"] = "http://127.0.0.1:9"  # nothing listens here: tests never reach a real model; a test scripts one with tests/fake_ollama.py
 os.environ["VOICE_WARMUP"] = "false"
+os.environ["AUTO_ASSIGN_ENABLED"] = "false"  # dispatch/simulator tests switch these on explicitly
+os.environ["SIMULATION_ENABLED"] = "false"
 os.environ["BCRYPT_ROUNDS"] = "4"  # fast hashing in tests only
 os.environ["GPS_MIN_INTERVAL_SECONDS"] = "0"  # the flood throttle is exercised by its own test
 os.environ["RATE_LIMIT_ENABLED"] = "false"  # rate-limit tests switch it on explicitly
@@ -32,6 +34,20 @@ from main import api
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def fresh_ollama_state():
+    """The 'Ollama is down' cooldown and the injected transport are process-wide; never let one test leak into the next."""
+    from services import ollama_client
+
+    def no_ollama(request):
+        raise httpx.ConnectError("connection refused")   # instant, unlike a real dead port (Windows takes ~2 s to give up)
+    ollama_client._transport = httpx.MockTransport(no_ollama)
+    ollama_client.reset()
+    yield
+    ollama_client._transport = None
+    ollama_client.reset()
 
 
 @pytest.fixture

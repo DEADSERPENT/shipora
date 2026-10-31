@@ -22,7 +22,7 @@ def model(monkeypatch):
     """Scripted model: optionally calls one tool, then returns `text`. Records whether it was consulted at all."""
     state = {"tool": None, "args": {}, "text": "ok", "called": 0, "tools": None}
 
-    async def fake(system, tools, executors, message, history, sentiment, on_stage=None):
+    async def fake(system, tools, executors, message, history, sentiment, on_stage=None, ran_out=None):
         state["called"] += 1
         state["tools"] = {t["name"] for t in tools}
         if state["tool"]:

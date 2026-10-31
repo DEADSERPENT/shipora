@@ -4,7 +4,7 @@ agents, tools and providers can record into it without being passed anything (as
 object is shared, so worker threads record into the same turn).
 
 Timings are wall-clock milliseconds. `tool_ms` includes the database queries a tool runs; `db_history_ms` is the
-conversation-memory read; model time is `gemini_ms` / `ollama_ms`; `stt_ms` and `tts_ms` are the voice stages."""
+conversation-memory read; model time is `ollama_ms`; `stt_ms` and `tts_ms` are the voice stages."""
 
 import contextvars
 import threading

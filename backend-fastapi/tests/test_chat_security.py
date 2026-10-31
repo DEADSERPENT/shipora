@@ -7,7 +7,7 @@ import pytest
 from agents import general_agent, orchestrator, tracking_agent
 from models.tracking_log import TrackingLog
 from tests.conftest import register
-from tests.test_tracking_agent_my_shipments import gemini_calls, make_shipment  # noqa: F401  (fixture re-export)
+from tests.test_tracking_agent_my_shipments import ollama_calls, make_shipment  # noqa: F401  (fixture re-export)
 from tools.analytics import execute_get_operations_summary
 from tools.shipment_tools import execute_get_shipment_status
 from tools.tracking_tools import execute_get_vehicle_status
@@ -130,8 +130,8 @@ async def test_fallback_gives_no_fleet_or_operations_data_to_anyone_but_operatio
         assert not any(ch.isdigit() for ch in text.replace("24/7", "")) or "operations accounts only" in text.lower() or "operations only" in text.lower()
 
 
-async def test_a_model_hallucinating_a_forbidden_tool_gets_nothing(client, gemini_calls):
-    plan, captured = gemini_calls
+async def test_a_model_hallucinating_a_forbidden_tool_gets_nothing(client, ollama_calls):
+    plan, captured = ollama_calls
     await fleet_world(client)
     plan.update(tool="get_vehicle_status", args={})
     reply = await tracking_agent.handle("which vehicles are live", [], "neutral", current_user=CUSTOMER)

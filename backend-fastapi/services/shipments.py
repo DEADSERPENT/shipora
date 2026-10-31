@@ -198,7 +198,8 @@ async def change_status(shipment: Shipment, new_status: str, actor: dict, note: 
     return updated
 
 
-async def assign_agent(shipment: Shipment, agent_id: PydanticObjectId, actor: dict, pickup_at: Optional[datetime] = None) -> Shipment:
+async def assign_agent(shipment: Shipment, agent_id: PydanticObjectId, actor: dict, pickup_at: Optional[datetime] = None,
+                       note: Optional[str] = None) -> Shipment:
     from models.delivery_agent import DeliveryAgent
 
     if actor.get("role") != "admin":
@@ -221,7 +222,7 @@ async def assign_agent(shipment: Shipment, agent_id: PydanticObjectId, actor: di
             # that loses the race re-reads, sees PICKUP_SCHEDULED, and only changes the agent.
             set_["status"] = "PICKUP_SCHEDULED"
             set_.setdefault("pickupScheduledAt", datetime.utcnow())
-            push = {"statusHistory": _event("PICKUP_SCHEDULED", "admin", actor.get("id"), f"Assigned to {agent.name}")}
+            push = {"statusHistory": _event("PICKUP_SCHEDULED", "admin", actor.get("id"), note or f"Assigned to {agent.name}")}
         if await _cas_update(shipment, set_, push=push):
             break
         fresh = await Shipment.get(shipment.id)

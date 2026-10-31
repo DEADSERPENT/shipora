@@ -87,7 +87,7 @@ async def test_nobody_but_operations_is_offered_the_live_fleet(client, classifie
 async def test_a_message_with_a_tracking_number_goes_to_tracking_even_if_misclassified(client, monkeypatch, classifier_says):
     seen = []
 
-    async def spy(message, history, sentiment, current_user=None, on_stage=None):
+    async def spy(message, history, sentiment, current_user=None, on_stage=None, **kw):
         seen.append(message)
         return "status"
     monkeypatch.setattr(tracking_agent, "handle", spy)

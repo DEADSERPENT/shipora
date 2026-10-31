@@ -1,5 +1,4 @@
-"""Router agent: classifies intent + sentiment in one forced Gemini function
-call, then dispatches to the matching specialist agent, falling back to
+"""Router agent: classifies intent + sentiment in one structured Ollama call, then dispatches to the matching specialist agent, falling back to
 general_agent for anything unclassified or when a specialist can't produce
 a reply (no API key, tool-call error, etc).
 
@@ -13,18 +12,30 @@ import re
 from typing import Optional
 
 import config
-from services import gemini_client, metrics, ollama_client
+from services import metrics, ollama_client
 from agents.base import PROMISE_REPLACEMENT
 from services import complaint_drafts
 from agents import roles, complaints_agent, general_agent, schedule_agent, support_agent, tracking_agent
 log = logging.getLogger("shipora.agents")
 
 
+_DID_YOU_MEAN = re.compile(r"Did you mean (SHP[0-9A-F]{8,10})\?")
+
+
+def resolve_did_you_mean(message: str, history: list) -> str:
+    """The assistant offered "Did you mean SHP…?" (a mis-heard number repaired against the caller's own shipments) and the caller said
+    yes: the yes means "look that one up". Rewrites a bare confirmation into the lookup it stands for; anything else is unchanged."""
+    said = roles.user_text(message)
+    if complaint_drafts.classify_reply(said) != "confirm" or not history:
+        return message
+    last = next((h for h in reversed(history) if h.get("role") != "user"), None)
+    m = _DID_YOU_MEAN.search((last or {}).get("content", ""))
+    return f"Where is {m.group(1)}?" if m else message
+
+
 def tracking_agent_extract(text: str):
     from tools.shipment_tools import extract_tracking_number
     return extract_tracking_number(text)
-
-CLASSIFIER_MODEL = "gemini-flash-lite-latest"
 
 CLASSIFY_TOOL = {
     "name": "classify",
@@ -53,6 +64,9 @@ _SPECIALISTS = {
 _COMPLAINT_WORDS = re.compile(r"\b(complain\w*|damaged|lost|missing|broken|crushed|refund|rude|late|delayed|issue|problem|report)\b", re.I)
 _ROUTE_RE = re.compile(r"\b(my route|my deliver\w*|what'?s next|next deliver\w*|(?:what|which) .{0,20}(?:pending|assigned))\b", re.I)
 _MY_PARCEL_RE = re.compile(r"\bwhere(?:'s| is)?\s+(?:my|the)\s+(?:parcel|package|shipment|order)s?\b|\bmy\s+(?:parcel|package|shipment|order)s?\b", re.I)
+# The support specialist only knows Shipora's contact details. A small classifier also sends it "can I cancel my shipment?" and
+# "how much does delivery cost?", which it can only answer wrongly ("contact support").
+_CONTACT_RE = re.compile(r"\b(phone|call|contact|e-?mail|whatsapp|helpline|customer care|care number|office|address|hours|reach (?:you|us|support)|talk to|speak to|support (?:team|number|line))\b", re.I)
 _NEGATIVE_WORDS = {"angry", "furious", "terrible", "worst", "awful", "disgusting", "never", "useless", "broken"}
 _POSITIVE_WORDS = {"thanks", "thank", "great", "awesome", "good", "love", "perfect", "excellent"}
 
@@ -112,27 +126,6 @@ def _keyword_classify(message: str) -> dict:
     return {"agent": agent, "sentiment": sentiment}
 
 
-def _classify_sync(message: str, history: list) -> dict:
-    import google.generativeai as genai
-
-    genai.configure(api_key=config.GEMINI_API_KEY)
-    model = genai.GenerativeModel(CLASSIFIER_MODEL)
-    contents = [{"role": "user" if h["role"] == "user" else "model", "parts": [h["content"]]} for h in history[-6:]]
-    contents.append({"role": "user", "parts": [message]})
-    resp = model.generate_content(
-        contents,
-        tools={"function_declarations": [
-            {"name": CLASSIFY_TOOL["name"], "description": CLASSIFY_TOOL["description"], "parameters": CLASSIFY_TOOL["input_schema"]}
-        ]},
-        tool_config={"function_calling_config": {"mode": "ANY", "allowed_function_names": ["classify"]}},
-        request_options=gemini_client.request_options(),
-    )
-    gemini_client.note_success()
-    fc = resp.candidates[0].content.parts[0].function_call
-    args = dict(fc.args)
-    return {"agent": args["agent"], "sentiment": args["sentiment"]}
-
-
 async def classify(message: str, history: list) -> dict:
     with metrics.timed("classify_ms"):
         return await _classify(message, history)
@@ -142,20 +135,13 @@ async def _classify(message: str, history: list) -> dict:
     # CLASSIFIER_MODE=hybrid: the keyword router answers instantly when it is decisive; the LLM only sees ambiguous messages.
     if config.CLASSIFIER_MODE == "hybrid" and keyword_is_decisive(message):
         return _keyword_classify(message)
-    if ollama_client.enabled():
-        try:
-            return await ollama_client.classify(message, history, CLASSIFY_TOOL)
-        except Exception as err:
-            log.warning("ollama classification failed; using keywords", extra={"event": "classify_failed", "provider": "ollama",
-                                                                              "error_type": type(err).__name__, "error": str(err)[:200]})
-            return _keyword_classify(message)
-    if config.GEMINI_API_KEY in config.PLACEHOLDER_VALUES or gemini_client.is_unavailable():
+    if ollama_client.is_unavailable():
         return _keyword_classify(message)
     try:
-        return await asyncio.to_thread(_classify_sync, message, history)
+        return await ollama_client.classify(message, history, CLASSIFY_TOOL)
     except Exception as err:
-        gemini_client.note_failure(err)
-        log.warning("intent classification failed; using keywords", extra={"event": "classify_failed", "error_type": type(err).__name__, "error": str(err)[:200]})
+        log.warning("intent classification failed; using keywords", extra={"event": "classify_failed", "provider": "ollama",
+                                                                           "error_type": type(err).__name__, "error": str(err)[:200]})
         return _keyword_classify(message)
 
 
@@ -164,6 +150,7 @@ async def route_and_reply(message: str, history: list, current_user: Optional[di
     if on_stage:
         on_stage("thinking", None)
 
+    message = resolve_did_you_mean(message, history)
     blocked = roles.intent_denial(current_user, message)
     if blocked:
         return {"reply": blocked, "source": "builtin", "agent": "general", "sentiment": "neutral"}
@@ -178,16 +165,25 @@ async def route_and_reply(message: str, history: list, current_user: Optional[di
         agent_name = "tracking"          # "where is SHP…" is a shipment lookup, whatever a small model says
     elif agent_name == "general" and roles.role_of(current_user) == roles.DRIVER and _ROUTE_RE.search(said):
         agent_name = "tracking"          # a rider's route question: the tracking specialist has their assignments (and a database fallback)
-    elif agent_name == "general" and roles.role_of(current_user) == roles.USER and _MY_PARCEL_RE.search(said) and not _COMPLAINT_WORDS.search(said):
+    elif agent_name == "general" and roles.role_of(current_user) == roles.USER and _MY_PARCEL_RE.search(said) and not _COMPLAINT_WORDS.search(said) \
+            and not tracking_agent.is_howto(said):       # "Can I cancel my shipment?" is a policy question, not a lookup
         agent_name = "tracking"
+    if agent_name == "support" and not _CONTACT_RE.search(said):
+        agent_name = "general"           # not a contact question: the general agent has the knowledge base
     agent_name, denial = roles.route_for(current_user, agent_name)   # each role only reaches the specialists meant for it
     if denial:
         return {"reply": denial, "source": "builtin", "agent": "general", "sentiment": sentiment}
 
     reply, source = None, "ai"
+    if agent_name == "tracking":
+        reply = await tracking_agent.direct(said, current_user)      # e.g. a rider's route: the exact rows, no model needed
+        if reply is not None:
+            return {"reply": reply, "source": "builtin", "agent": "tracking", "sentiment": sentiment}
+    meta = {}
     if agent_name in _SPECIALISTS:
-        extra = {"session_id": session_id, "channel": channel} if agent_name == "complaints" else {}
+        extra = {"session_id": session_id, "channel": channel, "meta": meta} if agent_name == "complaints" else {"meta": meta} if agent_name in ("tracking", "support") else {}
         reply = await _SPECIALISTS[agent_name].handle(message, history, sentiment, current_user, on_stage=on_stage, **extra)
+        source = meta.get("source", source)
 
     if reply == PROMISE_REPLACEMENT and agent_name == "tracking":
         reply = None                    # the model only promised a lookup: answer from the database instead

@@ -217,22 +217,36 @@ async def driver_location(sid, data=None):
         return
     _last_accept[driver_id] = mono
 
-    now = datetime.utcnow()
     areas = [_text(a, 100) for a in (data.get("areasCompleted") or [])[:50]] if isinstance(data.get("areasCompleted"), list) else []
-    current_area, eta = _text(data.get("currentArea"), 100, "N/A"), _text(data.get("eta"), 30, "N/A")
+    await publish_vehicle_location(
+        driver_id, claims.get("name"), claims.get("vehicleNo"), lat, lng,
+        # display identity is taken from the signed token, never from the (client-controlled) payload
+        current_area=_text(data.get("currentArea"), 100, "") or None, eta=_text(data.get("eta"), 30, "") or None,
+        eta_minutes=_number(data.get("etaMinutes"), 0, 1440), distance_km=_number(data.get("distanceKm"), 0, 500),
+        target=_text(data.get("target"), 30) or None, areas=areas)
+
+
+async def publish_vehicle_location(driver_id: str, name: Optional[str], vehicle_no: Optional[str], lat: float, lng: float, *,
+                                   current_area: Optional[str] = None, eta: Optional[str] = None, eta_minutes: Optional[float] = None,
+                                   distance_km: Optional[float] = None, target: Optional[str] = None,
+                                   areas: Optional[List[str]] = None) -> None:
+    """A delivery agent's position report: updates the live vehicle store, tells everyone watching the fleet, and saves the day's
+    tracking log. The one path for a real rider's phone (the `driver:location` event above) and for the rider simulator
+    (services/simulator.py), so a simulated rider is indistinguishable from a real one to every client."""
+    now = datetime.utcnow()
+    areas = areas or []
     vehicle_locations[driver_id] = {
         "driverId": driver_id,
         "lat": lat,
         "lng": lng,
-        # display identity is taken from the signed token, never from the (client-controlled) payload
-        "driverName": claims.get("name"),
-        "vehicleNo": claims.get("vehicleNo"),
-        "currentArea": current_area,
-        "eta": eta,
+        "driverName": name,
+        "vehicleNo": vehicle_no,
+        "currentArea": current_area or "N/A",
+        "eta": eta or "N/A",
         # live navigation figures from the rider's route (optional; absent for older clients)
-        "etaMinutes": _number(data.get("etaMinutes"), 0, 1440),
-        "distanceKm": _number(data.get("distanceKm"), 0, 500),
-        "target": _text(data.get("target"), 30) or None,
+        "etaMinutes": eta_minutes,
+        "distanceKm": distance_km,
+        "target": target,
         "areasCompleted": areas,
         "lastUpdated": _iso(now),
         "isActive": True,
@@ -245,7 +259,7 @@ async def driver_location(sid, data=None):
         from models.tracking_log import TrackingLog
 
         update = {
-            "$set": {"lat": lat, "lng": lng, "currentArea": data.get("currentArea") and current_area, "eta": data.get("eta") and eta,
+            "$set": {"lat": lat, "lng": lng, "currentArea": current_area, "eta": eta,
                      "lastUpdated": now, "isActive": True, "updatedAt": now},
             "$addToSet": {"areasCompleted": {"$each": areas}},
             "$setOnInsert": {"createdAt": now},
