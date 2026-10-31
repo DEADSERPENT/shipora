@@ -84,8 +84,14 @@ def _new_id(m: re.Match) -> str:
     return "SHP" + re.sub(r"\D", "", m.group(1))
 
 
+# "SHP" is not an English word, so ASR often hears its last letter as a rhyming one ("SHB 6071 7355", measured with Whisper small).
+# Only repaired when exactly 8 digits follow, i.e. when the text is plainly a tracking number.
+_SHP_LOOKALIKE = re.compile(r"(?<![A-Za-z0-9])(S\W{0,2}H\W{0,2})[BTDV](?=(?:\W{0,2}\d){8}(?!\d))", re.I)
+
+
 def extract_id(text: str):
     """The tracking number in `text` in canonical form (spoken, spaced or mis-heard variants repaired), or None."""
+    text = _SHP_LOOKALIKE.sub(lambda m: m.group(1) + "P", text or "")
     m = _NEW_ID.search(text or "")
     if m:
         return _new_id(m)
@@ -110,6 +116,7 @@ def fix_transcript(text: str) -> str:
         return text
     for pattern, replacement in _BRANDS:
         text = pattern.sub(replacement, text)
+    text = _SHP_LOOKALIKE.sub(lambda m: m.group(1) + "P", text)
     text = _spoken_run_to_chars(text)
     text = _NEW_ID.sub(_new_id, text)
     return _CANDIDATE.sub(_repair_candidate, text)

@@ -38,7 +38,20 @@ from models.shipment import ParcelDetails, Party, Shipment, generate_tracking_nu
 from services.stt import transcribe_audio  # noqa: E402
 from services.tts import audio_mime_type, synthesize_speech  # noqa: E402
 
-LATENCY_BUDGET_MS = {"stt": 8000, "llm": 15000, "tts": 8000}   # generous: CPU-only local models
+LATENCY_BUDGET_MS = {"stt": 8000, "llm": 15000, "tts": 8000}   # generous: allows CPU-only machines
+
+
+def execution_note() -> str:
+    """Where the configured models actually run, so the latency line is not misread."""
+    if config.STT_PROVIDER == "faster_whisper":
+        stt_where = "CPU" if config.FASTER_WHISPER_DEVICE == "cpu" else "GPU if CUDA works, else CPU"
+    elif config.STT_PROVIDER == "openai":
+        stt_where = "cloud"
+    else:
+        stt_where = config.ONNX_STT_DEVICE.upper()
+    llm_where = "Ollama (GPU if the model fits in VRAM)" if config.LLM_PROVIDER == "ollama" else "Gemini cloud"
+    tts_where = "cloud" if config.TTS_PROVIDER == "openai" else "CPU"
+    return f"STT {stt_where}; LLM {llm_where}; TTS {tts_where}"
 
 
 def say(text=""):
@@ -132,7 +145,7 @@ async def main(argv=None) -> int:
     if lat:
         within = all(lat.get(k) is None or lat[k] <= v for k, v in LATENCY_BUDGET_MS.items())
         record("5b Latency within budget", within, f"stt={lat.get('stt')} llm={lat.get('llm')} tts={lat.get('tts')} total={lat.get('total')} ms "
-               f"(budget {LATENCY_BUDGET_MS}; CPU-only local models — production telephony targets are far lower)")
+               f"(budget {LATENCY_BUDGET_MS}; {execution_note()} — production telephony targets are far lower)")
     reply = str(body.get("reply", ""))
     recovered = bool(re.search(r"out for delivery", reply, re.I)) or TN in reply
     record("5c Spoken-ID resilience", recovered, "reply names the right parcel (exact match or 'did you mean' repair)" if recovered

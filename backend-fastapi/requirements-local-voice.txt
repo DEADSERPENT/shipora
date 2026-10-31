@@ -7,3 +7,6 @@ piper-tts>=1.2
 # onnx_local STT (Whisper on ONNX Runtime, pure Python): works where CTranslate2 (faster-whisper) is blocked by the OS
 onnx-asr[cpu,hub]>=0.12
 av>=12  # decodes browser recordings (webm/opus) in-process
+# GPU speech-to-text on NVIDIA (FASTER_WHISPER_DEVICE=auto uses it automatically; without these it falls back to CPU)
+nvidia-cublas-cu12; sys_platform == "win32" or sys_platform == "linux"
+nvidia-cudnn-cu12; sys_platform == "win32" or sys_platform == "linux"

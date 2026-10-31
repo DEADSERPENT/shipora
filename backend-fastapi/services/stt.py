@@ -43,23 +43,52 @@ _whisper_model = None
 _whisper_lock = threading.Lock()
 
 
+def _register_cuda_dlls() -> None:
+    """On Windows the pip packages nvidia-cublas-cu12 / nvidia-cudnn-cu12 (requirements-local-voice.txt) put the CUDA runtime
+    DLLs inside site-packages, where CTranslate2 does not look. Make them loadable before faster-whisper is imported."""
+    import glob
+    import os
+    import site
+    import sys
+
+    if sys.platform != "win32":
+        return
+    for root in {*site.getsitepackages(), site.getusersitepackages()}:
+        for d in glob.glob(os.path.join(root, "nvidia", "*", "bin")):
+            try:
+                os.add_dll_directory(d)
+            except OSError:
+                continue
+            os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+
+
 def _load_whisper_model():
-    """Loads (once per process) the faster-whisper model. Isolated so tests can replace it."""
+    """Loads (once per process) the faster-whisper model. Isolated so tests can replace it.
+    Uses the GPU when CUDA works (FASTER_WHISPER_DEVICE=auto/cuda) and falls back to CPU int8 when the CUDA libraries are
+    missing, so a machine without them still transcribes — just slower."""
     global _whisper_model
     with _whisper_lock:
         if _whisper_model is None:
+            _register_cuda_dlls()
             from faster_whisper import WhisperModel  # optional dependency, imported only when this provider is used
 
             from services import local_models
 
             name = config.FASTER_WHISPER_MODEL
             local_dir = local_models.resolve(name, "whisper")
-            _whisper_model = WhisperModel(
-                str(local_dir) if local_dir.is_dir() else name,  # a downloaded model dir wins; a bare size name is fetched by faster-whisper on first use
-                device=config.FASTER_WHISPER_DEVICE,
-                compute_type=config.FASTER_WHISPER_COMPUTE_TYPE,
-                download_root=str(local_models.models_dir() / "whisper"),
-            )
+            source = str(local_dir) if local_dir.is_dir() else name  # a downloaded model dir wins; a bare size name is fetched by faster-whisper on first use
+            download_root = str(local_models.models_dir() / "whisper")
+            device, compute = config.FASTER_WHISPER_DEVICE, config.FASTER_WHISPER_COMPUTE_TYPE
+            try:
+                _whisper_model = WhisperModel(source, device=device, compute_type=compute, download_root=download_root)
+                if device != "cpu":
+                    list(_whisper_model.transcribe(__import__("numpy").zeros(16000, dtype="float32"))[0])  # CUDA library errors only surface on first use
+                    log.info("faster-whisper ready", extra={"event": "stt_ready", "provider": "faster_whisper", "device": device})
+            except (RuntimeError, ValueError) as err:
+                if device == "cpu":
+                    raise
+                log.warning("faster-whisper GPU unavailable; using CPU", extra={"event": "stt_gpu_fallback", "provider": "faster_whisper", "error": str(err)[:200]})
+                _whisper_model = WhisperModel(source, device="cpu", compute_type="int8", download_root=download_root)
         return _whisper_model
 
 

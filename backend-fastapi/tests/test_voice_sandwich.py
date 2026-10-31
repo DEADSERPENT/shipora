@@ -187,6 +187,16 @@ def test_a_real_word_after_shp_is_not_mistaken_for_an_artifact():
     assert extract_tracking_number("SHPAB1234567 is not a number") is None
 
 
+@pytest.mark.parametrize("heard", ["track SHB 6071 7355", "track S H D 6 0 7 1 7 3 5 5", "SHT60717355", "shv-6071-7355"])
+def test_a_rhyming_last_letter_of_the_prefix_is_repaired_when_eight_digits_follow(heard):
+    assert extract_tracking_number(heard) == "SHP60717355"
+    assert "SHP60717355" in fix_transcript(heard)
+
+
+def test_a_rhyming_prefix_without_eight_digits_is_left_alone():
+    assert extract_tracking_number("the SHB 1234 code") is None and fix_transcript("the SHB 1234 code") == "the SHB 1234 code"
+
+
 def test_mangled_prefix_is_recovered_from_the_sentence_around_it():
     assert extract_tracking_number("Where is my parcel? The tracking number is as HP 81742801.") == "SHP81742801"
     assert extract_tracking_number("my order is 81742801") is None           # a bare number elsewhere is not a tracking number

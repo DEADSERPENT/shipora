@@ -330,3 +330,24 @@ async def test_every_provider_is_given_speech_clean_text_and_nothing_when_there_
     await tts.synthesize_speech("**Out for delivery**\n- arriving today")
     assert heard == ["Out for delivery. arriving today."]
     assert await tts.synthesize_speech("**  **") is None and len(heard) == 1            # nothing speakable: provider not called
+
+
+def test_faster_whisper_falls_back_to_cpu_when_the_gpu_libraries_are_missing(monkeypatch):
+    """Audit: on a machine without cublas/cudnn the CUDA load raises RuntimeError. Transcription must continue on CPU."""
+    import sys
+    import types
+
+    calls = []
+
+    class FakeModel:
+        def __init__(self, source, device, compute_type, download_root):
+            calls.append((device, compute_type))
+            if device != "cpu":
+                raise RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeModel))
+    monkeypatch.setattr(stt, "_whisper_model", None)
+    monkeypatch.setattr(config, "FASTER_WHISPER_DEVICE", "auto")
+    assert isinstance(stt._load_whisper_model(), FakeModel)
+    assert calls == [("auto", config.FASTER_WHISPER_COMPUTE_TYPE), ("cpu", "int8")]
+    monkeypatch.setattr(stt, "_whisper_model", None)

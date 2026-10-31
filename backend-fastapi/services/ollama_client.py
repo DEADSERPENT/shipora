@@ -14,6 +14,7 @@ Every function returns None / raises on failure and callers fall back exactly as
 (keyword router -> database fallback -> rule-based knowledge base). Models must support tool calling
 (`ollama show <model>` lists "tools" under Capabilities)."""
 
+import asyncio
 import json
 import logging
 from typing import Optional
@@ -30,6 +31,29 @@ log = logging.getLogger("shipora.ollama")
 _transport: Optional[httpx.AsyncBaseTransport] = None   # tests inject httpx.MockTransport
 AGENTS = ["tracking", "complaints", "schedule", "support", "general"]
 SENTIMENTS = ["positive", "neutral", "negative"]
+TOOL_TIMEOUT_SECONDS = 30   # same bound as the Gemini path: a tool (one DB query) that hangs must not hang the turn
+
+
+def leaked_tool_json(text: str) -> bool:
+    """Small models sometimes put a tool call (or the tool schema itself) in the reply text instead of the tool_calls field.
+    That is JSON for the machine, never an answer for a person."""
+    t = (text or "").strip()
+    if not t or t[0] not in "[{":
+        return False
+    try:
+        data = json.loads(t)
+    except ValueError:
+        return False
+    items = data if isinstance(data, list) else [data]
+    return bool(items) and all(isinstance(i, dict) and ("function" in i or "arguments" in i or ("name" in i and "parameters" in i)) for i in items)
+
+
+def _answer(msg: dict) -> Optional[str]:
+    text = (msg.get("content") or "").strip()
+    if leaked_tool_json(text):
+        log.warning("model returned a tool call as text; discarding", extra={"event": "ollama_leaked_tool_json"})
+        return None                      # callers fall back to the database / rules instead of showing JSON to the user
+    return text or None
 
 
 def enabled() -> bool:
@@ -92,23 +116,36 @@ async def run_tool_agent(system_prompt: str, tools: list, executors: dict, messa
     if not calls:
         if on_stage:
             on_stage("generating_response", None)
-        return (first.get("content") or "").strip() or None
+        return _answer(first)
 
     messages.append({k: v for k, v in first.items() if k in ("role", "content", "tool_calls")})
     for call in calls[:2]:                                  # bound the work a (small) model can ask for in one turn
         fn = call["function"]
         name, args = fn["name"], fn.get("arguments") or {}
         if isinstance(args, str):
-            args = json.loads(args or "{}")
+            try:
+                args = json.loads(args or "{}")
+            except ValueError:
+                args = None
         if on_stage:
             on_stage("tool_execution", name)
         executor = executors.get(name)
-        result = await executor(**args) if executor else {"error": f"unknown tool {name}"}
+        if not executor:
+            result = {"error": f"unknown tool {name}"}
+        elif not isinstance(args, dict):
+            result = {"error": f"invalid arguments for tool {name}"}
+        else:
+            try:
+                result = await asyncio.wait_for(executor(**args), TOOL_TIMEOUT_SECONDS)
+            except TypeError:               # arguments the tool does not take (a small model invents parameter names)
+                result = {"error": f"invalid arguments for tool {name}"}
+            except asyncio.TimeoutError as err:
+                raise RuntimeError(f"tool {name!r} timed out after {TOOL_TIMEOUT_SECONDS}s") from err
         messages.append({"role": "tool", "tool_name": name, "content": json.dumps(result, default=str)})
     if on_stage:
         on_stage("generating_response", None)
     final = await chat(messages)                            # no tools -> must answer in text
-    return (final.get("content") or "").strip() or None
+    return _answer(final)
 
 
 async def reply(message: str, history: list, system_prompt: str) -> Optional[str]:

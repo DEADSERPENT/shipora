@@ -58,7 +58,7 @@ the precision in `ONNX_STT_QUANTIZATION`, default `int8`, plus tokenizer files �
 `ONNX_STT_QUANTIZATION=` (empty) for full precision (≈ 400 MB). Other `onnx-asr` model names work only if you place
 their files in `local_models/onnx_stt/<model-name>/` yourself — untested here. Recordings longer than
 `ONNX_STT_MAX_SECONDS` (30) are truncated; Whisper processes 30-second windows. `ONNX_STT_DEVICE=cuda` needs
-`onnxruntime-gpu` in place of `onnxruntime` and has not been tried.
+`onnxruntime-gpu` in place of `onnxruntime` and has not been tried (use faster-whisper for GPU speech recognition instead, below).
 
 **Piper** — download a voice (an `.onnx` file *and* its `.onnx.json` next to it) into `local_models/piper/`:
 
@@ -107,3 +107,26 @@ recordings (webm/opus, mp4) with its bundled PyAV, so ffmpeg is not required for
 Replies are written for the chat bubble (markdown, bullets). Before any TTS provider — OpenAI or Piper — sees them,
 `services/tts.py: speech_text()` strips the markdown syntax and turns line breaks into sentence pauses, so the voice
 reads "Tracking a parcel: every shipment…" instead of "star star Tracking a parcel star star". The on-screen text is unchanged.
+
+
+## GPU speech recognition (faster-whisper on NVIDIA CUDA)
+
+`STT_PROVIDER=faster_whisper` with the default `FASTER_WHISPER_DEVICE=auto` runs on the GPU when CUDA works. On Windows and
+Linux `pip install -r requirements-local-voice.txt` also installs `nvidia-cublas-cu12` and `nvidia-cudnn-cu12`; `services/stt.py`
+registers their DLL folders itself. If the CUDA libraries are missing or the model will not load on the GPU it logs
+`stt_gpu_fallback` and continues on CPU (`int8`), so voice never stops working because of a driver problem.
+
+Measured on an RTX 3060 Laptop GPU (6 GB), Whisper `small`, 4-second clip: **~290 ms on GPU vs ~3,200 ms on CPU** (same transcript).
+Ollama (`LLM_PROVIDER=ollama`) uses the GPU by itself; check with `ollama ps` (PROCESSOR should read `100% GPU`). A model that does
+not fit in free VRAM (e.g. `qwen3:8b` on 6 GB while other things hold memory) is split across CPU and GPU and becomes several
+times slower — `qwen2.5:3b` stays fully resident. Piper and the ONNX STT provider run on CPU.
+
+## Verification scripts
+
+| Script | What it checks |
+|---|---|
+| `scripts/verify_sandwich.py` | One caller turn through the REAL STT, agents (against an in-memory database) and TTS, then `/api/voice/chat`. |
+| `scripts/audit_voice.py` | Real STT/TTS robustness: speaking speed, white noise, how the ID is spoken, empty/silent/garbage/truncated/long audio, latency, memory, concurrency. |
+
+Not covered by either (no recordings available): Indian-English and other accents, Hindi, Kannada. Piper only ships the `en_US` voice
+here; anything else needs real human recordings.

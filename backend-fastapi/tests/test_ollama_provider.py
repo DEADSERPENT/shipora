@@ -88,3 +88,45 @@ async def test_qwen3_thinking_is_switched_off(monkeypatch):
     fake = FakeOllama([{"role": "assistant", "content": "hi"}])
     await ollama_client.chat([{"role": "user", "content": "x"}])
     assert "think" not in fake.requests[0]
+
+
+# ── audit regressions: what a small model can do wrong inside the tool loop ──
+async def _tracking_turn(client, email, script):
+    await register(client, "user", email)
+    cust = await Customer.find_one(Customer.email == email)
+    await _shipment(cust.id, "SHP1A2B3C4D5E", "IN_TRANSIT")
+    fake = FakeOllama([{"role": "assistant", "content": '{"agent": "tracking", "sentiment": "neutral"}'}, *script])
+    return fake, await orchestrator.route_and_reply("where is SHP1A2B3C4D5E", [], None)
+
+
+@pytest.mark.parametrize("leak", [
+    '[{"type":"function","function":{"name":"get_shipment_status","description":"x","parameters":{}}}]',
+    '{"name": "get_shipment_status", "arguments": {"trackingNumber": "SHP1A2B3C4D5E"}}',
+])
+async def test_a_tool_call_leaked_as_text_is_never_shown_and_the_database_answers(client, leak):
+    _, result = await _tracking_turn(client, "leak@x.test", [{"role": "assistant", "content": leak}])
+    assert "function" not in result["reply"] and "{" not in result["reply"]
+    assert "IN TRANSIT" in result["reply"].upper().replace("_", " ") and result["source"] == "builtin"
+
+
+async def test_malformed_or_invented_tool_arguments_do_not_crash_the_turn(client):
+    call = {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "get_shipment_status", "arguments": {"bogus": 1}}},
+                                                                 {"function": {"name": "get_shipment_status", "arguments": "{not json"}},
+                                                                 {"function": {"name": "does_not_exist", "arguments": {}}}]}
+    fake, result = await _tracking_turn(client, "bad@x.test", [call, {"role": "assistant", "content": "Sorry, I could not look that up."}])
+    tool_msgs = [m for m in fake.requests[-1]["messages"] if m["role"] == "tool"]
+    assert len(tool_msgs) == 2                                         # at most two tool calls per turn
+    assert all("error" in json.loads(m["content"]) for m in tool_msgs)
+    assert result["reply"] == "Sorry, I could not look that up."
+
+
+async def test_a_hanging_tool_times_out_instead_of_hanging_the_turn(monkeypatch):
+    import asyncio
+    monkeypatch.setattr(ollama_client, "TOOL_TIMEOUT_SECONDS", 0.05)
+
+    async def hang(**kw):
+        await asyncio.sleep(5)
+    FakeOllama([{"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "slow", "arguments": {}}}]}])
+    tool = {"name": "slow", "description": "d", "input_schema": {"type": "object", "properties": {}}}
+    with pytest.raises(RuntimeError, match="timed out"):          # base.py turns this into the normal database fallback
+        await ollama_client.run_tool_agent("sys", [tool], {"slow": hang}, "hi", [], "neutral")

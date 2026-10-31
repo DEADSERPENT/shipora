@@ -76,7 +76,7 @@ async def create_draft(user: dict, session_id: Optional[str], subject: str, cate
 
 
 async def latest(user: dict, session_id: Optional[str]) -> Optional[ComplaintDraft]:
-    return await ComplaintDraft.find(_scope(user, session_id)).sort(-ComplaintDraft.createdAt).first_or_none()
+    return await ComplaintDraft.find(_scope(user, session_id)).sort([("createdAt", -1), ("_id", -1)]).first_or_none()   # _id breaks ties: createdAt only has millisecond precision
 
 
 async def has_pending(user: dict, session_id: Optional[str]) -> bool:
@@ -98,7 +98,7 @@ async def awaiting(user: dict, session_id: Optional[str]) -> bool:
 async def decline(user: dict, session_id: Optional[str]) -> Optional[str]:
     res = await ComplaintDraft.get_motor_collection().find_one_and_update(
         {**_scope(user, session_id), "status": "pending"}, {"$set": {"status": "declined", "updatedAt": datetime.utcnow()}},
-        sort=[("createdAt", -1)], return_document=ReturnDocument.AFTER)
+        sort=[("createdAt", -1), ("_id", -1)], return_document=ReturnDocument.AFTER)
     return "Okay — I haven't filed anything. Tell me if you'd like to report it later." if res else None
 
 
@@ -111,7 +111,7 @@ async def confirm(user: dict, session_id: Optional[str]) -> Optional[str]:
     # Atomic claim: of any number of simultaneous "yes" replies exactly one flips pending -> filing.
     claimed = await ComplaintDraft.get_motor_collection().find_one_and_update(
         {**scope, "status": "pending", "expiresAt": {"$gt": now}}, {"$set": {"status": "filing", "updatedAt": now}},
-        sort=[("createdAt", -1)], return_document=ReturnDocument.AFTER)
+        sort=[("createdAt", -1), ("_id", -1)], return_document=ReturnDocument.AFTER)
     if claimed is None:
         d = await latest(user, session_id)
         if d is None:

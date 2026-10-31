@@ -27,7 +27,7 @@ A full-stack platform for sending parcels and running the fleet that delivers th
 plus `DELIVERY_FAILED`, `CUSTOMER_UNAVAILABLE`, `ADDRESS_ISSUE`, `DAMAGED`, `CANCELLED`, `RETURN_TO_ORIGIN`. Transitions are validated server-side (`backend-fastapi/models/shipment.py`), gated by role, and capped at 3 delivery attempts. Every response carries `allowedNextStatuses` for the caller, so the UI never duplicates the rules.
 
 ### ShipBot — AI assistant
-Router agent → specialist agents (tracking, delivery issues, shipment schedule, support, general), each with database-backed tools (`get_shipment_status`, `get_my_shipments`, `get_vehicle_status`, `create_complaint`, `get_operations_summary`, …). Gemini does classification and tool-calling; without `GEMINI_API_KEY` everything falls back to keyword routing and a rule-based knowledge base. Optional voice (OpenAI Whisper/TTS) — see [`docs/VOICE_ARCHITECTURE.md`](docs/VOICE_ARCHITECTURE.md).
+Router agent → specialist agents (tracking, delivery issues, shipment schedule, support, general), each with database-backed tools (`get_shipment_status`, `get_my_shipments`, `get_vehicle_status`, `create_complaint`, `get_operations_summary`, …). The reasoning provider is selected with `LLM_PROVIDER`: **Gemini** (default; classification + tool-calling) or a local **Ollama** model (`LLM_PROVIDER=ollama`, runs on the GPU, no cloud dependency). If the chosen provider is unavailable the system does not switch to the other one: it falls back to keyword routing, a database answer for tracking questions, and a rule-based knowledge base. Voice is optional and provider-selectable: speech-to-text is OpenAI Whisper, local faster-whisper (GPU when CUDA works, otherwise CPU) or local ONNX Whisper; text-to-speech is OpenAI TTS or local Piper — see [`docs/VOICE_ARCHITECTURE.md`](docs/VOICE_ARCHITECTURE.md).
 
 ---
 
@@ -40,7 +40,7 @@ Router agent → specialist agents (tracking, delivery issues, shipment schedule
 | Database | MongoDB (Atlas) via Motor + Beanie; falls back to in-memory mongomock if unreachable |
 | Auth | PyJWT + bcrypt |
 | Maps | OpenStreetMap tiles, Nominatim geocoding, OSRM road routing |
-| AI | Google Gemini (classification + tool-calling), OpenAI Whisper/TTS for voice |
+| AI | Google Gemini or local Ollama (classification + tool-calling); voice: OpenAI, faster-whisper / ONNX Whisper, Piper |
 
 ## Repository layout
 
