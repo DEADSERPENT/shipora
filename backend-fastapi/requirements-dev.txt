@@ -1,0 +1,3 @@
+-r requirements.txt
+pytest>=8
+aiohttp>=3.9  # python-socketio AsyncClient (websocket tests)

@@ -1,4 +1,4 @@
-// Formal finite state machine for the EcoBot voice conversation, replacing
+// Formal finite state machine for the ShipBot voice conversation, replacing
 // separate isListening/isSpeaking/isThinking/isRecording/isProcessing
 // booleans. Booleans grow combinatorially and can represent impossible
 // states (e.g. isListening && isSpeaking both true); a single enum with an
@@ -62,9 +62,12 @@ export const TRANSITIONS = {
 // running, not a guess.
 export const TOOL_LABELS = {
   get_vehicle_status: 'Checking vehicle location…',
-  get_complaint_status: 'Checking complaint status…',
-  create_complaint: 'Filing your complaint…',
-  get_collection_schedule: 'Checking your schedule…',
+  get_shipment_status: 'Looking up your shipment…',
+  get_my_shipments: 'Checking your shipments…',
+  get_complaint_status: 'Checking your delivery issues…',
+  create_complaint: 'Filing your delivery issue…',
+  list_complaints_admin: 'Reviewing delivery issues…',
+  get_operations_summary: 'Summarising operations…',
   get_support_info: 'Looking up support info…',
   search_knowledge_base: 'Searching knowledge base…',
 };

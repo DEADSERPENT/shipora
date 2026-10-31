@@ -1,0 +1,16 @@
+/* Public tracking page (opened from shared links) */
+.trackpage { min-height: 100vh; padding: 104px 20px 64px; background: linear-gradient(#fffdf4, #f6f8f3 420px); }
+.trackpage-inner { max-width: 760px; margin: 0 auto; }
+.trackpage-head { text-align: center; margin-bottom: 26px; }
+.trackpage-head h1 { font-size: clamp(30px, 4.4vw, 44px); font-weight: 800; letter-spacing: -0.04em; line-height: 1.08; }
+.trackpage-head p { color: #5b6a60; font-size: 16.5px; margin-top: 8px; }
+.trackpage-form { display: flex; gap: 10px; background: #fff; border: 1.5px solid var(--border); border-radius: 20px; padding: 10px; box-shadow: 0 14px 34px rgba(20,32,26,.08); margin-bottom: 26px; }
+.trackpage-form .lp-field { flex: 1; flex-direction: row; align-items: center; gap: 10px; padding: 0 16px; min-height: 54px; }
+.trackpage-form .lp-field input { font-family: var(--font-display); letter-spacing: .02em; }
+.trackpage-id { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 0 4px 12px; }
+.trackpage-id span { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; color: #7a887f; }
+.trackpage-id b { font-family: var(--font-display); font-size: 22px; letter-spacing: .02em; color: var(--brand-800); }
+.trackpage-id em { font-style: normal; color: #6b7a70; font-weight: 600; font-size: 14px; margin-left: auto; }
+.trackpage-timeline { background: #fff; border: 1.5px solid var(--border); border-radius: 22px; padding: 24px; display: flex; flex-direction: column; }
+.trackpage-timeline h2 { font-size: 18px; font-weight: 800; margin-bottom: 14px; letter-spacing: -0.02em; }
+@media (max-width: 560px) { .trackpage-form { flex-direction: column; } .trackpage { padding-top: 92px; } }

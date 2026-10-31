@@ -6,18 +6,33 @@ services:
       - mongo_data:/data/db
     expose:
       - "27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
 
   backend:
     build:
       context: ./backend-fastapi
+    restart: unless-stopped
     env_file:
       - ./backend-fastapi/.env
     environment:
-      MONGO_URI: mongodb://mongo:27017/waste-disposal
+      # The container uses its own database service, regardless of the MONGO_URI in .env (which may point at Atlas).
+      MONGO_URI: mongodb://mongo:27017/shipora
     depends_on:
-      - mongo
+      mongo:
+        condition: service_healthy
     ports:
       - "5000:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/api/health', timeout=4).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
 
 volumes:
   mongo_data:

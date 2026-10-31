@@ -1,6 +1,13 @@
-import React, { useState, useRef, useReducer, useEffect } from 'react';
+import React, { useState, useRef, useReducer, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { io } from 'socket.io-client';
+import { ArrowUp, AudioLines, ChartColumn, Clock, Hand, Headset, Hourglass, List, MapPin, Mic, Navigation, Package, Pause, Play, RotateCcw, Route, Settings, Shield, Square, Truck, TriangleAlert, User, Users, Volume1, Volume2, Wallet, Zap } from 'lucide-react';
+import { API_URL } from '../lib/shipora';
+import { useAuth } from '../context/AuthContext';
+import useDictation from '../hooks/useDictation';
+import useSpeaker from '../hooks/useSpeaker';
+import { joinDictation, loadDictationPreference, loadSpeakReplies, pickDictationEngine, saveDictationPreference, saveSpeakReplies } from '../lib/speech';
+import { Ic } from './Icon';
 import {
   VOICE_STATES, voiceReducer, initialVoiceState, labelFor,
 } from './voiceConversationMachine';
@@ -10,43 +17,214 @@ import {
   detectScriptLanguage, loadSettings, saveSettings,
 } from './multilingual';
 
-const API = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const API = API_URL;
 const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000';
 
 const css = `
 @keyframes chatPop {
-  from { opacity: 0; transform: scale(0.85) translateY(20px); transform-origin: bottom left; }
-  to   { opacity: 1; transform: scale(1)    translateY(0);    transform-origin: bottom left; }
+  from { opacity: 0; transform: scale(0.9) translateY(24px); transform-origin: bottom left; }
+  to   { opacity: 1; transform: scale(1)   translateY(0);    transform-origin: bottom left; }
 }
 @keyframes botTyping {
-  0%,80%,100% { transform: scale(0); opacity: 0.4; }
-  40%         { transform: scale(1); opacity: 1; }
+  0%,80%,100% { transform: translateY(0) scale(0.7); opacity: 0.4; }
+  40%         { transform: translateY(-4px) scale(1); opacity: 1; }
 }
 @keyframes msgIn {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 @keyframes fabPulse {
-  0%,100% { box-shadow: 0 6px 24px rgba(26,58,26,0.45), 0 0 0 0 rgba(45,122,45,0.5); }
-  60%     { box-shadow: 0 6px 24px rgba(26,58,26,0.45), 0 0 0 12px rgba(45,122,45,0); }
+  0%,100% { box-shadow: 0 5px 0 #d9a406, 0 10px 26px rgba(20,32,26,0.28), 0 0 0 0 rgba(248,203,70,0.65); }
+  60%     { box-shadow: 0 5px 0 #d9a406, 0 10px 26px rgba(20,32,26,0.28), 0 0 0 14px rgba(248,203,70,0); }
 }
 @keyframes micPulse {
-  0%,100% { box-shadow: 0 0 0 0 rgba(220,38,38,0.55); }
-  50%     { box-shadow: 0 0 0 9px rgba(220,38,38,0); }
+  0%,100% { box-shadow: 0 0 0 0 rgba(226,55,68,0.55); }
+  50%     { box-shadow: 0 0 0 9px rgba(226,55,68,0); }
 }
 @keyframes speakerPulse {
-  0%,100% { opacity: 0.55; }
+  0%,100% { opacity: 0.6; }
   50%     { opacity: 1; }
 }
+@keyframes livePing {
+  0%   { box-shadow: 0 0 0 0 rgba(12,131,31,0.55); }
+  100% { box-shadow: 0 0 0 7px rgba(12,131,31,0); }
+}
 .chat-fab      { animation: fabPulse 2.8s ease-in-out infinite; }
-.chat-fab:hover{ animation: none !important; transform: scale(1.1) !important; }
-.chat-panel    { animation: chatPop 0.28s cubic-bezier(0.34,1.56,0.64,1) both; }
-.chat-msg      { animation: msgIn 0.22s ease both; }
-.dot1 { animation: botTyping 1.2s 0.0s infinite; }
-.dot2 { animation: botTyping 1.2s 0.2s infinite; }
-.dot3 { animation: botTyping 1.2s 0.4s infinite; }
-.mic-btn-listening { animation: micPulse 1.2s ease-in-out infinite; background: #dc2626 !important; }
+.chat-fab:hover{ animation: none !important; transform: translateY(-2px) !important; }
+.chat-panel    { animation: chatPop 0.32s cubic-bezier(0.34,1.4,0.64,1) both; }
+.chat-msg      { animation: msgIn 0.24s ease both; }
+.dot1 { animation: botTyping 1.1s 0.0s infinite; }
+.dot2 { animation: botTyping 1.1s 0.15s infinite; }
+.dot3 { animation: botTyping 1.1s 0.3s infinite; }
+.mic-btn-listening { animation: micPulse 1.2s ease-in-out infinite; }
 .speaker-pill  { animation: speakerPulse 1.1s ease-in-out infinite; }
+
+/* ── Launcher ── */
+.cb-fab {
+  position: fixed; bottom: 28px; left: 28px; z-index: 1000;
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 56px; padding: 0 22px 0 18px; border: none; border-radius: 20px;
+  background: var(--accent, #f8cb46); color: var(--ink, #14201a);
+  font-family: var(--font-display, inherit); font-weight: 800; font-size: 15px; letter-spacing: -0.01em;
+  cursor: pointer; outline: none; transition: transform .18s;
+}
+.cb-fab-x { font-size: 28px; line-height: 1; font-weight: 500; padding: 0 6px; }
+
+/* ── Panel ── */
+.cb-panel {
+  position: fixed; bottom: 96px; left: 28px; z-index: 1000;
+  width: 400px; height: min(640px, calc(100vh - 176px));
+  display: flex; flex-direction: column; overflow: hidden;
+  background: #fff; border-radius: 28px;
+  border: 1px solid rgba(20,32,26,0.08);
+  box-shadow: 0 30px 80px rgba(20,32,26,0.28), 0 4px 18px rgba(20,32,26,0.12);
+  font-family: var(--font-body, inherit);
+}
+@media (max-width: 520px) {
+  .cb-panel { left: 0; right: 0; bottom: 0; width: 100%; height: 88vh; border-radius: 28px 28px 0 0; }
+  .cb-fab { left: 16px; bottom: 16px; }
+}
+
+/* header */
+.cb-header {
+  display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+  padding: 16px 16px 16px 18px; position: relative; overflow: hidden;
+  background: var(--accent, #f8cb46);
+}
+.cb-header::after {
+  content: ''; position: absolute; right: -34px; top: -46px; width: 150px; height: 150px; border-radius: 50%;
+  background: rgba(255,255,255,0.35); pointer-events: none;
+}
+.cb-avatar-lg {
+  width: 44px; height: 44px; border-radius: 15px; flex-shrink: 0; transform: rotate(-5deg);
+  display: flex; align-items: center; justify-content: center;
+  background: var(--ink, #14201a); color: var(--accent, #f8cb46);
+  box-shadow: 0 3px 0 rgba(20,32,26,0.25);
+}
+.cb-title { flex: 1; min-width: 0; position: relative; z-index: 1; }
+.cb-name { font-family: var(--font-display, inherit); font-weight: 800; font-size: 20px; letter-spacing: -0.03em; color: var(--ink, #14201a); line-height: 1.1; }
+.cb-status { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: rgba(20,32,26,0.72); margin-top: 2px; }
+.cb-live { width: 8px; height: 8px; border-radius: 50%; background: #0c831f; animation: livePing 1.8s ease-out infinite; }
+.cb-icon-btn {
+  position: relative; z-index: 1; width: 34px; height: 34px; border-radius: 12px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; border: none; cursor: pointer;
+  background: rgba(20,32,26,0.1); color: var(--ink, #14201a); font-size: 20px; line-height: 1; transition: background .15s;
+}
+.cb-icon-btn:hover { background: rgba(20,32,26,0.2); }
+.cb-icon-btn.on { background: var(--ink, #14201a); color: var(--accent, #f8cb46); }
+
+/* settings + voice bar */
+.cb-settings { padding: 12px 16px; background: #fffbea; border-bottom: 1px solid #f3e6a8; display: flex; flex-direction: column; gap: 10px; }
+.cb-setting-row { display: flex; gap: 10px; align-items: center; }
+.cb-setting-row label { font-size: 12px; font-weight: 700; color: var(--ink, #14201a); width: 62px; flex-shrink: 0; }
+.cb-setting-row select { flex: 1; font-size: 13px; padding: 7px 10px; border-radius: 10px; border: 1.5px solid #e9dca0; background: #fff; }
+.cb-warn { font-size: 11.5px; color: #92400e; background: #fff7d6; border: 1px solid #fde68a; border-radius: 10px; padding: 6px 10px; }
+.cb-voice-bar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 18px; font-size: 12.5px; font-weight: 700;
+  background: #e8f7ec; color: #0a5c16; border-bottom: 1px solid #cdeed5;
+}
+.cb-voice-bar.err { background: #fdecee; color: #a3202c; border-bottom-color: #f7c7cc; }
+
+/* messages */
+.cb-messages {
+  flex: 1; overflow-y: auto; padding: 16px 16px 8px; display: flex; flex-direction: column; gap: 14px;
+  background:
+    radial-gradient(rgba(20,32,26,0.055) 1px, transparent 1.2px) 0 0 / 18px 18px,
+    #f7f8f4;
+  scrollbar-width: thin; scrollbar-color: #cfd8cf transparent;
+}
+.cb-welcome {
+  background: #fff; border: 1px solid var(--border, #e6eae3); border-radius: 22px; padding: 18px 18px 16px;
+  box-shadow: 0 6px 20px rgba(20,32,26,0.06); animation: msgIn .4s ease both;
+}
+.cb-welcome-badge {
+  display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 999px;
+  background: #e8f7ec; color: #0a5c16; font-size: 11.5px; font-weight: 700; margin-bottom: 10px;
+}
+.cb-welcome-title { font-family: var(--font-display, inherit); font-size: 24px; font-weight: 800; letter-spacing: -0.03em; color: var(--ink, #14201a); line-height: 1.1; }
+.cb-welcome-sub { margin-top: 6px; font-size: 13.5px; line-height: 1.5; color: var(--muted, #6b7a70); }
+
+.cb-row { display: flex; gap: 8px; align-items: flex-end; }
+.cb-row.me { justify-content: flex-end; }
+.cb-avatar {
+  width: 28px; height: 28px; border-radius: 10px; flex-shrink: 0; transform: rotate(-5deg);
+  display: flex; align-items: center; justify-content: center; background: var(--ink, #14201a); color: var(--accent, #f8cb46);
+}
+.cb-col { display: flex; flex-direction: column; max-width: 82%; min-width: 0; }
+.cb-row.me .cb-col { align-items: flex-end; }
+.cb-bubble { padding: 11px 15px; font-size: 14px; line-height: 1.55; word-wrap: break-word; overflow-wrap: anywhere; }
+.cb-bubble.bot {
+  background: #fff; color: var(--ink, #14201a); border: 1px solid var(--border, #e6eae3);
+  border-radius: 20px 20px 20px 6px; box-shadow: 0 2px 8px rgba(20,32,26,0.05);
+}
+.cb-bubble.me {
+  background: linear-gradient(135deg, #12a02c 0%, #0c831f 100%); color: #fff;
+  border-radius: 20px 20px 6px 20px; box-shadow: 0 6px 16px rgba(12,131,31,0.28); font-weight: 500;
+}
+.cb-bubble strong { font-weight: 700; }
+.cb-gap { height: 6px; }
+.cb-li { display: flex; gap: 9px; align-items: flex-start; margin: 3px 0; }
+.cb-li-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-600, #f2b705); margin-top: 8px; flex-shrink: 0; }
+.cb-tn {
+  display: inline-block; padding: 1px 8px; border-radius: 8px; background: #fff3c4; color: #5c4400;
+  font-family: var(--font-display, inherit); font-weight: 800; font-size: 12.5px; letter-spacing: 0.02em; border: 1px solid #f3dc7a;
+}
+.cb-status-chip {
+  display: inline-block; padding: 1px 9px; border-radius: 999px; background: #e3f6e8; color: #0a5c16;
+  font-weight: 700; font-size: 12.5px; border: 1px solid #bfe8c7;
+}
+.cb-agent { font-size: 11px; font-weight: 700; color: var(--muted, #6b7a70); margin: 5px 0 0 4px; display: flex; align-items: center; gap: 5px; }
+.cb-agent::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--brand-500, #2fb44a); }
+.cb-typing { padding: 0; }
+.cb-dots { display: flex; gap: 5px; align-items: center; padding: 15px 16px; }
+.cb-dots span { width: 8px; height: 8px; border-radius: 50%; background: var(--brand-600, #159a2b); display: inline-block; }
+
+/* quick actions */
+.cb-quick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 4px 16px 12px; background: #f7f8f4; }
+.cb-quick-btn {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px; text-align: left; cursor: pointer;
+  padding: 12px; border-radius: 16px; background: #fff; border: 1.5px solid var(--border, #e6eae3);
+  font-family: inherit; font-size: 12.5px; font-weight: 700; line-height: 1.3; color: var(--ink, #14201a);
+  transition: transform .15s, border-color .15s, box-shadow .15s;
+}
+.cb-quick-btn:hover { transform: translateY(-2px); border-color: var(--brand-600, #159a2b); box-shadow: 0 8px 18px rgba(12,131,31,0.14); }
+.cb-quick-ico { width: 30px; height: 30px; border-radius: 10px; display: flex; align-items: center; justify-content: center; background: var(--accent, #f8cb46); color: var(--ink, #14201a); }
+
+/* input */
+.cb-input-wrap { padding: 8px 14px 12px; background: #fff; border-top: 1px solid var(--border, #e6eae3); flex-shrink: 0; }
+.cb-input {
+  display: flex; align-items: center; gap: 6px; padding: 5px 5px 5px 16px; border-radius: 999px;
+  background: #f3f5f1; border: 1.5px solid transparent; transition: border-color .15s, background .15s, box-shadow .15s;
+}
+.cb-input:focus-within { background: #fff; border-color: var(--brand-600, #159a2b); box-shadow: 0 0 0 4px rgba(12,131,31,0.12); }
+.cb-input input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; font-family: inherit; font-size: 14px; color: var(--ink, #14201a); padding: 8px 0; }
+.cb-input input::placeholder { color: #8a978d; }
+.cb-mic, .cb-send {
+  width: 38px; height: 38px; border-radius: 50%; flex-shrink: 0; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: transform .15s, background .15s, box-shadow .15s;
+}
+.cb-mic { background: transparent; color: var(--brand-700, #0c831f); }
+.cb-mic:hover { background: #e3f6e8; }
+.cb-mic.active, .cb-mic.mic-btn-listening { background: var(--red, #e23744); color: #fff; }
+.cb-mic:disabled { opacity: .45; cursor: not-allowed; }
+.cb-speak { display: flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 11.5px; color: var(--muted, #6b7a70); }
+.cb-speak button { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; cursor: pointer; color: var(--brand-700, #0c831f); font: 600 11.5px inherit; padding: 3px 6px; border-radius: 8px; }
+.cb-speak button:hover:not(:disabled) { background: #e3f6e8; }
+.cb-speak button:disabled { opacity: .5; cursor: default; }
+.cb-voice-note { min-height: 0; font-size: 11.5px; color: var(--muted, #6b7a70); padding: 0 4px; }
+.cb-voice-note span { display: inline-flex; align-items: center; gap: 5px; padding-top: 5px; }
+.cb-voice-err { margin: 6px 0 0; align-items: center; }
+.cb-voice-err button { margin-left: auto; border: 0; background: none; cursor: pointer; font-size: 16px; color: inherit; }
+@media (max-width: 480px) { .cb-speak button { padding: 6px 8px; } }
+.cb-send { background: var(--brand-700, #0c831f); color: #fff; box-shadow: 0 3px 0 var(--brand-800, #0a5c16); }
+.cb-send:hover:not(:disabled) { transform: translateY(-1px); }
+.cb-send:active:not(:disabled) { transform: translateY(2px); box-shadow: none; }
+.cb-send:disabled { background: #d9dfd9; color: #fff; box-shadow: none; cursor: default; }
+.cb-foot { text-align: center; font-size: 10.5px; color: #98a49b; margin-top: 7px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-fab, .chat-panel, .chat-msg, .cb-live, .dot1, .dot2, .dot3, .speaker-pill { animation: none !important; }
+}
 `;
 
 const mediaRecorderSupported = typeof window !== 'undefined' && !!window.MediaRecorder && !!navigator.mediaDevices;
@@ -91,8 +269,8 @@ const BARGE_IN_SUSTAIN_MS = 180; // amplitude must stay above threshold this lon
 
 const AGENT_LABELS = {
   tracking: 'Tracking Agent',
-  complaints: 'Complaints Agent',
-  schedule: 'Schedule Agent',
+  complaints: 'Delivery Issues Agent',
+  schedule: 'Shipment Schedule Agent',
   support: 'Support Agent',
   general: 'General Assistant',
 };
@@ -106,7 +284,7 @@ const STAGE_TO_STATE = {
 };
 
 function getSessionId() {
-  const key = 'eco_chat_session_id';
+  const key = 'shipora_chat_session_id';
   let id = sessionStorage.getItem(key);
   if (!id) {
     id = crypto.randomUUID();
@@ -117,32 +295,47 @@ function getSessionId() {
 
 function TypingDots() {
   return (
-    <div style={{ display: 'flex', gap: 5, alignItems: 'center', padding: '10px 14px' }}>
-      {['dot1','dot2','dot3'].map(c => (
-        <span key={c} className={c} style={{
-          width: 8, height: 8, borderRadius: '50%',
-          background: '#4db84d', display: 'inline-block',
-        }} />
-      ))}
+    <div className="cb-dots">
+      {['dot1', 'dot2', 'dot3'].map(c => <span key={c} className={c} />)}
     </div>
   );
 }
 
-const SUGGESTIONS = [
-  'How do I track the waste truck?',
-  'How to submit a complaint?',
-  'Change my pickup schedule',
-  'What waste types are accepted?',
-];
+// What the widget shows (greeting, suggestions, placeholder) comes from GET /api/chat/profile, which the backend builds per
+// signed-in role (agents/roles.py). This is only the fallback while that loads or if it fails.
+const ICONS = {
+  'map-pin': MapPin, package: Package, clock: Clock, alert: TriangleAlert, wallet: Wallet, user: User, headset: Headset,
+  route: Route, navigation: Navigation, list: List, chart: ChartColumn, truck: Truck, users: Users,
+};
+const DEFAULT_PROFILE = {
+  badge: 'Same-day · Bengaluru', title: "Hi, I'm ShipBot",
+  subtitle: 'Track a parcel, book a delivery or report an issue — ask me anything.',
+  placeholder: 'Ask about Shipora…',
+  greeting: "Hi! I'm **ShipBot**\nI can help you with Shipora — tracking parcels, creating shipments, delivery issues, and more. What can I help you with?",
+  suggestions: [
+    { text: 'Where is my parcel?', icon: 'map-pin' },
+    { text: 'How do I create a shipment?', icon: 'package' },
+    { text: 'When will my parcel arrive?', icon: 'clock' },
+    { text: 'How do I report a damaged parcel?', icon: 'alert' },
+  ],
+};
+
+const STATUS_NAMES = 'CREATED|PICKUP_SCHEDULED|PICKED_UP|IN_TRANSIT|OUT_FOR_DELIVERY|DELIVERED|DELIVERY_FAILED|CUSTOMER_UNAVAILABLE|ADDRESS_ISSUE|DAMAGED|CANCELLED|RETURNED_TO_ORIGIN';
+const STATUS_RE = new RegExp(`^(?:${STATUS_NAMES})$`);
+const INLINE_TOKEN = new RegExp(String.raw`(\*\*[^*]+\*\*|\b(?:${STATUS_NAMES})\b|\bSHP[0-9A-Z]{6,14}\b)`, 'g');
 
 export default function ChatBot() {
   const [open,    setOpen]    = useState(false);
   const [input,   setInput]   = useState('');
   const [sending, setSending] = useState(false); // text-send spinner only; independent of the voice FSM
-  const [history, setHistory] = useState([
-    { role: 'assistant', content: 'Hi! I\'m **EcoBot** 🌿\nI can help you with EcoTrack features — tracking, schedules, complaints, and more. What can I help you with?' }
-  ]);
-  const [speakReplies, setSpeakReplies] = useState(true);
+  const { user } = useAuth();
+  const [profile, setProfile] = useState(DEFAULT_PROFILE);
+  const [history, setHistory] = useState([{ role: 'assistant', content: DEFAULT_PROFILE.greeting }]);
+  const [speakReplies, setSpeakReplies] = useState(loadSpeakReplies);     // off by default; the choice is remembered
+  const [voicePref, setVoicePref] = useState(loadDictationPreference);       // 'auto' (browser) | 'server' (Shipora's own, private)
+  const [dictated, setDictated] = useState(false);
+  useEffect(() => { saveSpeakReplies(speakReplies); }, [speakReplies]);
+  useEffect(() => { saveDictationPreference(voicePref); }, [voicePref]);
   const [voiceState, dispatch] = useReducer(voiceReducer, initialVoiceState);
   const [settings, setSettings] = useState(loadSettings); // { language, voiceURI, rate, pitch } — see multilingual.js
   const [showSettings, setShowSettings] = useState(false);
@@ -151,9 +344,37 @@ export default function ChatBot() {
   useEffect(() => { saveSettings(settings); }, [settings]);
 
   const bottomRef        = useRef(null);
+  const dictationBase    = useRef('');
   const inputRef         = useRef(null);
   const panelRef         = useRef(null);
   const sessionIdRef     = useRef(getSessionId());
+  const lastIdentity     = useRef(undefined);
+
+  // Signing in, out or switching role starts a fresh conversation with that role's setup: no memory, session id or
+  // suggestions carry over from whoever used the assistant before.
+  useEffect(() => {
+    const identity = user ? `${user.role}:${user.id || user._id}` : 'anonymous';
+    if (lastIdentity.current === identity) return;
+    const first = lastIdentity.current === undefined;
+    lastIdentity.current = identity;
+    if (!first) {
+      sessionIdRef.current = crypto.randomUUID();
+      try { sessionStorage.setItem('shipora_chat_session_id', sessionIdRef.current); } catch {}
+    }
+    let cancelled = false;
+    axios.get(`${API}/chat/profile`)
+      .then(({ data }) => {
+        if (cancelled) return;
+        setProfile(data);
+        setHistory([{ role: 'assistant', content: data.greeting }]);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setProfile(DEFAULT_PROFILE);
+        setHistory([{ role: 'assistant', content: DEFAULT_PROFILE.greeting }]);
+      });
+    return () => { cancelled = true; };
+  }, [user]);
 
   // Voice conversation plumbing
   const activeRef          = useRef(false);
@@ -343,7 +564,7 @@ export default function ChatBot() {
     const form = new FormData();
     form.append('audio', blob, blob.type.includes('webm') ? 'recording.webm' : 'recording.m4a');
     form.append('sessionId', sessionIdRef.current);
-    form.append('speak', speakReplies ? 'true' : 'false');
+    form.append('speak', (speakReplies || activeRef.current) ? 'true' : 'false');
 
     try {
       const { data } = await axios.post(`${API}/voice/chat`, form);
@@ -583,7 +804,7 @@ export default function ChatBot() {
     const switchResult = tryHandleLanguageSwitch(transcript);
     if (switchResult) {
       dispatch({ type: 'FORCE', target: VOICE_STATES.GENERATING_RESPONSE });
-      if (speakReplies && speechSynthesisSupported) {
+      if ((speakReplies || activeRef.current) && speechSynthesisSupported) {
         // Pass targetLang explicitly rather than relying on settings.language
         // — setSettings() above is async, so this closure's `settings` is
         // still the OLD value until the next render; speaking the confirmation
@@ -621,7 +842,7 @@ export default function ChatBot() {
       // No voice:stage events fire for the text endpoint — same FORCE
       // fallback already used for the zero-API-key case.
       dispatch({ type: 'FORCE', target: VOICE_STATES.GENERATING_RESPONSE });
-      if (speakReplies && speechSynthesisSupported) {
+      if ((speakReplies || activeRef.current) && speechSynthesisSupported) {
         // Talk-over-it barge-in runs automatically here via monitorBargeIn's
         // self-calibrating amplitude VAD. Button-triggered interruptSpeech()
         // (toggleConversation) remains available as a reliable fallback either way.
@@ -824,9 +1045,26 @@ export default function ChatBot() {
   // ── Text send path (unchanged flow, decoupled from the voice FSM) ──────
   const historyForApi = () => history.filter(h => h.role !== 'assistant' || h !== history[0]);
 
+  const getPlaybackVoice = useCallback(() => pickVoiceForLanguage(settings.language, voiceOptions, settings.voiceURI), [settings.language, settings.voiceURI, voiceOptions]);
+  const speaker = useSpeaker({ api: API, lang: getRecognitionLang(settings.language), getVoice: getPlaybackVoice, preference: voicePref });
+  // Dictation fills the box and stops there: the person reads it, edits it, and presses Send themselves.
+  const dictation = useDictation({
+    api: API, lang: getRecognitionLang(settings.language), preference: voicePref,
+    onText: (text, final) => { setInput(joinDictation(dictationBase.current, text)); setDictated(true); if (final) inputRef.current?.focus(); },
+  });
+  const toggleDictation = () => {
+    if (dictation.listening) { dictation.stop(); return; }
+    speaker.stop();                                   // don't listen to our own voice
+    dictationBase.current = input;
+    dictation.start();
+  };
+  useEffect(() => { if (!open) { speaker.stop(); dictation.cancel(); } }, [open]); // eslint-disable-line
+
   const send = async (text) => {
     const msg = (text || input).trim();
     if (!msg || sending) return;
+    dictation.cancel();
+    setDictated(false);
     setInput('');
 
     detectedLanguageLogRef.current.push({ text: msg, language: detectScriptLanguage(msg), at: Date.now() });
@@ -849,6 +1087,7 @@ export default function ChatBot() {
         sessionId: sessionIdRef.current,
       });
       setHistory(h => [...h, { role: 'assistant', content: data.reply, agent: data.agent }]);
+      if (speakReplies) speaker.speak(`m${history.length + 1}`, data.reply);     // only when the person has switched spoken replies on
     } catch {
       setHistory(h => [...h, { role: 'assistant', content: 'Sorry, something went wrong. Please try again.' }]);
     } finally {
@@ -856,17 +1095,22 @@ export default function ChatBot() {
     }
   };
 
-  const renderContent = (text) => {
-    return text.split('\n').map((line, i) => {
-      const parts = line.split(/\*\*(.*?)\*\*/g);
-      return (
-        <span key={i}>
-          {parts.map((p, j) => j % 2 === 1 ? <strong key={j}>{p}</strong> : p)}
-          {i < text.split('\n').length - 1 && <br />}
-        </span>
-      );
-    });
-  };
+  // Bot text -> rich rows: bullets, **bold**, tracking numbers (SHP…) and shipment statuses as chips.
+  const renderInline = (line, key, rich) => line.split(INLINE_TOKEN).map((part, j) => {
+    if (j % 2 === 0) return part;
+    if (!rich) return part.startsWith('**') ? part.slice(2, -2) : part;  // the user's own text stays plain
+    if (part.startsWith('**')) return <strong key={`${key}-${j}`}>{part.slice(2, -2)}</strong>;
+    if (STATUS_RE.test(part)) return <span key={`${key}-${j}`} className="cb-status-chip">{part.toLowerCase().split('_').map(w => w[0].toUpperCase() + w.slice(1)).join(' ')}</span>;
+    return <span key={`${key}-${j}`} className="cb-tn">{part}</span>;
+  });
+
+  const renderContent = (text, rich = true) => text.split('\n').map((line, i) => {
+    if (!line.trim()) return <div key={i} className="cb-gap" />;
+    const bullet = line.match(/^\s*[•*-]\s+(.*)$/);
+    return bullet
+      ? <div key={i} className="cb-li"><span className="cb-li-dot" /><span>{renderInline(bullet[1], i, rich)}</span></div>
+      : <div key={i}>{renderInline(line, i, rich)}</div>;
+  });
 
   const isActive = voiceState.current !== VOICE_STATES.IDLE && voiceState.current !== VOICE_STATES.END;
   const isListeningNow = voiceState.current === VOICE_STATES.LISTENING;
@@ -890,98 +1134,46 @@ export default function ChatBot() {
 
       {/* ── Chat Panel ── */}
       {open && (
-        <div ref={panelRef} className="chat-panel" style={{
-          position: 'fixed', bottom: 100, left: 28, zIndex: 1000,
-          width: 360, maxHeight: 540,
-          background: '#fff', borderRadius: 20,
-          boxShadow: '0 20px 60px rgba(0,0,0,0.18), 0 4px 16px rgba(0,0,0,0.1)',
-          display: 'flex', flexDirection: 'column', overflow: 'hidden',
-          border: '1px solid rgba(45,122,45,0.15)',
-        }}>
+        <div ref={panelRef} className="chat-panel cb-panel" role="dialog" aria-label="ShipBot chat">
 
           {/* Header */}
-          <div style={{
-            background: 'linear-gradient(135deg, #1a3a1a 0%, #2d7a2d 100%)',
-            padding: '14px 18px', display: 'flex', alignItems: 'center', gap: 12,
-            flexShrink: 0,
-          }}>
-            <div style={{
-              width: 38, height: 38, borderRadius: '50%',
-              background: 'rgba(134,239,172,0.2)', border: '2px solid rgba(134,239,172,0.5)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20,
-              flexShrink: 0,
-            }}>🌿</div>
-            <div style={{ flex: 1 }}>
-              <div style={{ color: '#fff', fontWeight: 800, fontSize: 15, letterSpacing: '-0.3px' }}>EcoBot</div>
-              <div style={{ color: '#86efac', fontSize: 11, display: 'flex', alignItems: 'center', gap: 5 }}>
-                <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#4ade80', display: 'inline-block' }} />
-                Online · EcoTrack Assistant
-              </div>
+          <div className="cb-header">
+            <div className="cb-avatar-lg"><Ic icon={Zap} size={22} strokeWidth={2.6} /></div>
+            <div className="cb-title">
+              <div className="cb-name">ShipBot</div>
+              <div className="cb-status"><span className="cb-live" />Online · Shipora Assistant</div>
             </div>
             {VOICE_MODE === 'browser' && (
-              <button
-                onClick={() => setShowSettings(s => !s)}
-                title="Voice settings (language, voice, rate, pitch)"
-                style={{
-                  background: showSettings ? 'rgba(134,239,172,0.35)' : 'rgba(255,255,255,0.12)',
-                  border: '1px solid rgba(255,255,255,0.2)',
-                  color: '#fff', width: 30, height: 30, borderRadius: '50%',
-                  cursor: 'pointer', fontSize: 14, lineHeight: 1,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  transition: 'background 0.15s', flexShrink: 0,
-                }}
-              >⚙️</button>
+              <button className={`cb-icon-btn ${showSettings ? 'on' : ''}`} onClick={() => setShowSettings(s => !s)}
+                title="Voice settings (language, voice, rate, pitch)"><Ic icon={Settings} size={16} /></button>
             )}
-            <button
-              onClick={() => setSpeakReplies(s => !s)}
-              title={speakReplies ? 'Turn off spoken replies' : 'Turn on spoken replies'}
-              style={{
-                background: speakReplies ? 'rgba(134,239,172,0.35)' : 'rgba(255,255,255,0.12)',
-                border: '1px solid rgba(255,255,255,0.2)',
-                color: '#fff', width: 30, height: 30, borderRadius: '50%',
-                cursor: 'pointer', fontSize: 14, lineHeight: 1,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                transition: 'background 0.15s', flexShrink: 0,
-              }}
-            >{speakReplies ? '🔊' : '🔈'}</button>
-            <button onClick={() => setOpen(false)} style={{
-              background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.2)',
-              color: '#fff', width: 30, height: 30, borderRadius: '50%',
-              cursor: 'pointer', fontSize: 16, lineHeight: 1,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              transition: 'background 0.15s',
-            }}
-              onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.22)'}
-              onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.12)'}
-            >×</button>
+            <button className={`cb-icon-btn ${voicePref === 'server' ? 'on' : ''}`} onClick={() => setVoicePref(v => (v === 'server' ? 'auto' : 'server'))}
+              aria-pressed={voicePref === 'server'}
+              title={voicePref === 'server' ? "Private voice: speech is processed by Shipora's own server (on)" : "Private voice: use Shipora's own server instead of your browser's speech service"}>
+              <Ic icon={Shield} size={16} />
+            </button>
+            <button className={`cb-icon-btn ${speakReplies ? 'on' : ''}`} onClick={() => { setSpeakReplies(s => !s); speaker.stop(); }}
+              aria-pressed={speakReplies}
+              title={speakReplies ? 'Spoken replies are on — click to turn off' : 'Spoken replies are off — click to read every reply aloud'}>
+              {speakReplies ? <Ic icon={Volume2} size={16} /> : <Ic icon={Volume1} size={16} />}
+            </button>
+            <button className="cb-icon-btn" onClick={() => setOpen(false)} title="Close">×</button>
           </div>
 
           {/* Voice settings panel — language/voice/rate/pitch, persisted to localStorage */}
           {showSettings && VOICE_MODE === 'browser' && (
-            <div style={{
-              padding: '12px 16px', background: '#f0faf0', borderBottom: '1px solid #e8f5e8',
-              display: 'flex', flexDirection: 'column', gap: 10,
-            }}>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                <label style={{ fontSize: 11.5, fontWeight: 700, color: '#1a5c1a', width: 62, flexShrink: 0 }}>Language</label>
-                <select
-                  value={settings.language}
-                  onChange={e => setSettings(s => ({ ...s, language: e.target.value }))}
-                  style={{ flex: 1, fontSize: 12.5, padding: '5px 8px', borderRadius: 8, border: '1.5px solid #c8e6c8' }}
-                >
+            <div className="cb-settings">
+              <div className="cb-setting-row">
+                <label>Language</label>
+                <select value={settings.language} onChange={e => setSettings(s => ({ ...s, language: e.target.value }))}>
                   {Object.values(LANGUAGES).map(l => (
                     <option key={l.key} value={l.key}>{l.label}</option>
                   ))}
                 </select>
               </div>
-
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                <label style={{ fontSize: 11.5, fontWeight: 700, color: '#1a5c1a', width: 62, flexShrink: 0 }}>Voice</label>
-                <select
-                  value={settings.voiceURI || ''}
-                  onChange={e => setSettings(s => ({ ...s, voiceURI: e.target.value || null }))}
-                  style={{ flex: 1, fontSize: 12.5, padding: '5px 8px', borderRadius: 8, border: '1.5px solid #c8e6c8' }}
-                >
+              <div className="cb-setting-row">
+                <label>Voice</label>
+                <select value={settings.voiceURI || ''} onChange={e => setSettings(s => ({ ...s, voiceURI: e.target.value || null }))}>
                   <option value="">Auto (best match for language)</option>
                   {/* Real installed voice names (e.g. "Google हिन्दी", "Microsoft Heera") — not generic labels. */}
                   {voiceOptions.map(v => (
@@ -989,207 +1181,140 @@ export default function ChatBot() {
                   ))}
                 </select>
               </div>
-
               {voiceFallbackNotice && (
-                <div style={{ fontSize: 11, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '6px 10px' }}>
-                  ⚠️ {voiceFallbackNotice}
-                </div>
+                <div className="cb-warn"><Ic icon={TriangleAlert} size={13} /> {voiceFallbackNotice}</div>
               )}
             </div>
           )}
 
           {/* Voice conversation status bar — reads purely off the FSM state */}
           {voiceStatusLabel && (
-            <div className={isBusy || isSpeakingNow ? 'speaker-pill' : ''} style={{
-              padding: '6px 16px', fontSize: 11.5, fontWeight: 700,
-              background: voiceState.current === VOICE_STATES.ERROR ? '#fef2f2' : '#f0faf0',
-              color: voiceState.current === VOICE_STATES.ERROR ? '#991b1b' : '#1a5c1a',
-              borderBottom: '1px solid #e8f5e8', display: 'flex', alignItems: 'center', gap: 6,
-            }}>
-              <span>{isListeningNow ? '🎙️' : isSpeakingNow ? '🔊' : voiceState.current === VOICE_STATES.ERROR ? '⚠️' : '⏳'}</span>
+            <div className={`cb-voice-bar ${voiceState.current === VOICE_STATES.ERROR ? 'err' : ''} ${isBusy || isSpeakingNow ? 'speaker-pill' : ''}`}>
+              <Ic icon={isListeningNow ? Mic : isSpeakingNow ? Volume2 : voiceState.current === VOICE_STATES.ERROR ? TriangleAlert : Hourglass} size={14} />
               {voiceStatusLabel}
             </div>
           )}
 
           {/* Messages */}
-          <div style={{
-            flex: 1, overflowY: 'auto', padding: '14px 14px 8px',
-            display: 'flex', flexDirection: 'column', gap: 10,
-            scrollbarWidth: 'thin', scrollbarColor: '#d1e7d1 transparent',
-          }}>
+          <div className="cb-messages">
+            {history.length === 1 && (
+              <div className="cb-welcome">
+                <div className="cb-welcome-badge"><Ic icon={Zap} size={13} strokeWidth={2.6} /> {profile.badge}</div>
+                <div className="cb-welcome-title">{profile.title} <Ic icon={Hand} size={20} style={{ color: 'var(--accent-600)', verticalAlign: '-3px' }} /></div>
+                <div className="cb-welcome-sub">{profile.subtitle}</div>
+              </div>
+            )}
+
             {history.map((msg, i) => {
+              if (history.length === 1 && i === 0) return null;  // the welcome card replaces the initial greeting bubble
               const isBot = msg.role === 'assistant';
               return (
-                <div key={i} className="chat-msg" style={{
-                  display: 'flex', flexDirection: 'column',
-                  alignItems: isBot ? 'flex-start' : 'flex-end',
-                }}>
-                  <div style={{
-                    display: 'flex', justifyContent: isBot ? 'flex-start' : 'flex-end',
-                    gap: 8, alignItems: 'flex-end', width: '100%',
-                  }}>
-                    {isBot && (
-                      <div style={{
-                        width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
-                        background: 'linear-gradient(135deg, #1a3a1a, #2d7a2d)',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14,
-                      }}>🌿</div>
+                <div key={i} className={`chat-msg cb-row ${isBot ? 'bot' : 'me'}`}>
+                  {isBot && <div className="cb-avatar"><Ic icon={Zap} size={14} strokeWidth={2.6} /></div>}
+                  <div className="cb-col">
+                    <div className={`cb-bubble ${isBot ? 'bot' : 'me'}`}>{renderContent(msg.content, isBot)}</div>
+                    {isBot && msg.agent && AGENT_LABELS[msg.agent] && (
+                      <div className="cb-agent">{AGENT_LABELS[msg.agent]}</div>
                     )}
-                    <div style={{
-                      maxWidth: '78%', padding: '9px 13px', borderRadius: isBot ? '16px 16px 16px 4px' : '16px 16px 4px 16px',
-                      background: isBot ? '#f0faf0' : 'linear-gradient(135deg, #2d7a2d, #1a3a1a)',
-                      color: isBot ? '#1a3a1a' : '#fff',
-                      fontSize: 13.5, lineHeight: 1.55,
-                      border: isBot ? '1px solid #d1e7d1' : 'none',
-                      boxShadow: isBot ? '0 2px 8px rgba(0,0,0,0.06)' : '0 4px 12px rgba(26,58,26,0.3)',
-                    }}>
-                      {renderContent(msg.content)}
-                    </div>
+                    {isBot && i > 0 && (
+                      <div className="cb-speak" role="group" aria-label="Read this reply aloud">
+                        {speaker.activeId === `m${i}` ? (
+                          <>
+                            {speaker.status === 'paused'
+                              ? <button type="button" onClick={speaker.resume} title="Resume" aria-label="Resume"><Ic icon={Play} size={13} /></button>
+                              : <button type="button" onClick={speaker.pause} disabled={speaker.status === 'loading'} title="Pause" aria-label="Pause"><Ic icon={Pause} size={13} /></button>}
+                            <button type="button" onClick={speaker.stop} title="Stop" aria-label="Stop"><Ic icon={Square} size={12} /></button>
+                            <button type="button" onClick={() => speaker.speak(`m${i}`, msg.content)} title="Replay from the start" aria-label="Replay"><Ic icon={RotateCcw} size={13} /></button>
+                            <span>{speaker.status === 'loading' ? 'Preparing voice…' : speaker.status === 'paused' ? 'Paused' : 'Speaking…'}</span>
+                          </>
+                        ) : (
+                          <button type="button" onClick={() => speaker.speak(`m${i}`, msg.content)} title="Read this reply aloud" aria-label="Read this reply aloud"><Ic icon={Volume2} size={13} /> Listen</button>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  {isBot && msg.agent && AGENT_LABELS[msg.agent] && (
-                    <div style={{ fontSize: 10.5, color: '#7a9b7a', margin: '3px 0 0 36px', fontWeight: 600 }}>
-                      {AGENT_LABELS[msg.agent]}
-                    </div>
-                  )}
                 </div>
               );
             })}
 
             {sending && (
-              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-                <div style={{
-                  width: 28, height: 28, borderRadius: '50%',
-                  background: 'linear-gradient(135deg, #1a3a1a, #2d7a2d)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, flexShrink: 0,
-                }}>🌿</div>
-                <div style={{
-                  background: '#f0faf0', border: '1px solid #d1e7d1',
-                  borderRadius: '16px 16px 16px 4px',
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-                }}>
-                  <TypingDots />
-                </div>
+              <div className="cb-row bot chat-msg">
+                <div className="cb-avatar"><Ic icon={Zap} size={14} strokeWidth={2.6} /></div>
+                <div className="cb-bubble bot cb-typing"><TypingDots /></div>
               </div>
             )}
             <div ref={bottomRef} />
           </div>
 
-          {/* Suggestions (show only when 1 message) */}
+          {/* Quick actions (only before the first question) */}
           {history.length === 1 && (
-            <div style={{ padding: '0 12px 8px', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {SUGGESTIONS.map(s => (
-                <button key={s} onClick={() => send(s)} style={{
-                  fontSize: 11.5, padding: '5px 10px', borderRadius: 20,
-                  border: '1.5px solid #c8e6c8', background: '#f0faf0',
-                  color: '#1a5c1a', cursor: 'pointer', fontWeight: 600,
-                  transition: 'all 0.15s',
-                }}
-                  onMouseEnter={e => { e.currentTarget.style.background = '#2d7a2d'; e.currentTarget.style.color = '#fff'; e.currentTarget.style.borderColor = '#2d7a2d'; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = '#f0faf0'; e.currentTarget.style.color = '#1a5c1a'; e.currentTarget.style.borderColor = '#c8e6c8'; }}
-                >
-                  {s}
+            <div className="cb-quick">
+              {profile.suggestions.map(s => (
+                <button key={s.text} className="cb-quick-btn" onClick={() => send(s.text)}>
+                  <span className="cb-quick-ico"><Ic icon={ICONS[s.icon] || MapPin} size={16} /></span>
+                  <span>{s.text}</span>
                 </button>
               ))}
             </div>
           )}
 
           {/* Input */}
-          <div style={{
-            padding: '10px 12px', borderTop: '1px solid #e8f5e8',
-            display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0,
-            background: '#fafffe',
-          }}>
-            <input
-              ref={inputRef}
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && !e.shiftKey && send()}
-              placeholder="Ask about EcoTrack…"
-              disabled={sending}
-              style={{
-                flex: 1, padding: '9px 14px', borderRadius: 22,
-                border: '1.5px solid #d1e7d1', outline: 'none',
-                fontSize: 13.5, background: '#fff',
-                transition: 'border-color 0.15s',
-                color: '#1a3a1a',
-              }}
-              onFocus={e => e.target.style.borderColor = '#2d7a2d'}
-              onBlur={e => e.target.style.borderColor = '#d1e7d1'}
-            />
-            {voiceSupported && (
-              <button
-                onClick={toggleConversation}
-                title={isActive ? 'End conversation' : 'Start conversation'}
-                className={isListeningNow ? 'mic-btn-listening' : ''}
-                style={{
-                  width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
-                  background: isActive ? '#dc2626' : '#e8f5e8',
-                  border: 'none', cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  transition: 'background 0.2s',
-                }}
-              >
-                <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-                  <rect x="5.5" y="1.5" width="5" height="8" rx="2.5" fill={isActive ? '#fff' : '#2d7a2d'} />
-                  <path d="M3 7.5a5 5 0 0010 0" stroke={isActive ? '#fff' : '#2d7a2d'} strokeWidth="1.4" strokeLinecap="round" fill="none" />
-                  <path d="M8 12.5v2" stroke={isActive ? '#fff' : '#2d7a2d'} strokeWidth="1.4" strokeLinecap="round" />
-                </svg>
+          <div className="cb-input-wrap">
+            <div className="cb-input">
+              <input
+                ref={inputRef}
+                value={input}
+                onChange={e => { setInput(e.target.value); if (dictation.listening) dictation.stop(); }}
+                onKeyDown={e => e.key === 'Enter' && !e.shiftKey && send()}
+                placeholder={profile.placeholder}
+                disabled={sending}
+              />
+              {pickDictationEngine(voicePref) && !isActive && (
+                <button
+                  type="button"
+                  onClick={toggleDictation}
+                  disabled={sending || dictation.processing}
+                  aria-pressed={dictation.listening}
+                  aria-label={dictation.listening ? 'Stop dictation' : 'Dictate your message'}
+                  title={dictation.listening ? 'Stop — then check the text and press Send' : 'Speak your message (you can edit it before sending)'}
+                  className={`cb-mic ${dictation.listening ? 'mic-btn-listening active' : ''}`}
+                >
+                  {dictation.processing ? <Ic icon={Hourglass} size={17} /> : <Ic icon={Mic} size={17} />}
+                </button>
+              )}
+              {voiceSupported && (
+                <button
+                  onClick={toggleConversation}
+                  aria-label={isActive ? 'End hands-free conversation' : 'Start hands-free conversation'}
+                  title={isActive ? 'End hands-free conversation' : 'Hands-free conversation (replies are spoken)'}
+                  className={`cb-mic ${isActive ? 'active' : ''} ${isListeningNow ? 'mic-btn-listening' : ''}`}
+                >
+                  <Ic icon={AudioLines} size={17} />
+                </button>
+              )}
+              <button className="cb-send" onClick={() => send()} disabled={!input.trim() || sending} title="Send" aria-label="Send">
+                <Ic icon={ArrowUp} size={18} strokeWidth={2.8} />
               </button>
+            </div>
+            <div className="cb-voice-note" role="status" aria-live="polite">
+              {dictation.listening && <span><Ic icon={Mic} size={12} /> Listening… tap the microphone to stop.</span>}
+              {dictation.processing && <span><Ic icon={Hourglass} size={12} /> Turning your recording into text…</span>}
+              {!dictation.listening && !dictation.processing && dictated && input.trim() && <span>Check the text, change anything, then press Send.</span>}
+            </div>
+            {(dictation.error || speaker.error) && (
+              <div className="cb-warn cb-voice-err" role="alert">
+                <Ic icon={TriangleAlert} size={13} /> {dictation.error || speaker.error}
+                <button type="button" onClick={() => { dictation.cancel(); speaker.clearError(); }} aria-label="Dismiss">×</button>
+              </div>
             )}
-            <button
-              onClick={() => send()}
-              disabled={!input.trim() || sending}
-              style={{
-                width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
-                background: input.trim() && !sending
-                  ? 'linear-gradient(135deg, #2d7a2d, #1a3a1a)'
-                  : '#e8f5e8',
-                border: 'none', cursor: input.trim() && !sending ? 'pointer' : 'default',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                transition: 'all 0.2s', boxShadow: input.trim() && !sending ? '0 3px 10px rgba(26,58,26,0.3)' : 'none',
-              }}
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M14 8L2 2l3 6-3 6 12-6z"
-                  fill={input.trim() && !sending ? '#86efac' : '#9aab9a'}
-                  stroke={input.trim() && !sending ? '#86efac' : '#9aab9a'}
-                  strokeWidth="0.5" strokeLinejoin="round"
-                />
-              </svg>
-            </button>
+            <div className="cb-foot">ShipBot can make mistakes — check tracking details on the shipment page.</div>
           </div>
         </div>
       )}
 
-      {/* ── FAB Button ── */}
-      <button
-        className="chat-fab"
-        onClick={() => setOpen(o => !o)}
-        title="Chat with EcoBot"
-        style={{
-          position: 'fixed', bottom: 32, left: 32, zIndex: 1000,
-          width: 58, height: 58, borderRadius: '50%',
-          background: 'linear-gradient(145deg, #3a9a3a 0%, #1a3a1a 100%)',
-          border: '2px solid rgba(134,239,172,0.35)',
-          color: '#fff', cursor: 'pointer',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          transition: 'transform 0.2s, box-shadow 0.2s',
-          outline: 'none',
-        }}
-      >
-        {open ? (
-          <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-            <path d="M5 5l12 12M17 5L5 17" stroke="#86efac" strokeWidth="2.5" strokeLinecap="round"/>
-          </svg>
-        ) : (
-          <svg width="26" height="26" viewBox="0 0 26 26" fill="none">
-            <path d="M3 6a3 3 0 013-3h14a3 3 0 013 3v9a3 3 0 01-3 3H9l-5 4V6z"
-              fill="none" stroke="#86efac" strokeWidth="2" strokeLinejoin="round"/>
-            <circle cx="9"  cy="10.5" r="1.4" fill="#86efac"/>
-            <circle cx="13" cy="10.5" r="1.4" fill="#86efac"/>
-            <circle cx="17" cy="10.5" r="1.4" fill="#86efac"/>
-          </svg>
-        )}
+      {/* ── Launcher ── */}
+      <button className="chat-fab cb-fab" onClick={() => setOpen(o => !o)} title="Chat with ShipBot" aria-label="Chat with ShipBot">
+        {open ? <span className="cb-fab-x">×</span> : <><Ic icon={Zap} size={20} strokeWidth={2.6} /><span className="cb-fab-label">Ask ShipBot</span></>}
       </button>
     </>
   );

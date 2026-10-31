@@ -1,0 +1,9 @@
+# Optional: local, open-source speech providers (STT_PROVIDER=faster_whisper | onnx_local, TTS_PROVIDER=piper).
+# Not part of requirements.txt on purpose — they are large and the default providers (openai) don't need them.
+# Install into the backend venv:  pip install -r requirements-local-voice.txt   (setup: docs/LOCAL_VOICE.md)
+-r requirements.txt
+faster-whisper>=1.0
+piper-tts>=1.2
+# onnx_local STT (Whisper on ONNX Runtime, pure Python): works where CTranslate2 (faster-whisper) is blocked by the OS
+onnx-asr[cpu,hub]>=0.12
+av>=12  # decodes browser recordings (webm/opus) in-process

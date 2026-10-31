@@ -1,5 +1,5 @@
-"""General-purpose EcoBot agent — the orchestrator's fallback branch for
-anything that isn't tracking/complaints/support, and for when a specialist
+"""General-purpose ShipBot agent — the orchestrator's fallback branch for
+anything that isn't tracking/issues/support, and for when a specialist
 agent can't run (no Gemini key, tool-call failure, etc).
 
 Owns the system prompt, rule-based knowledge base, and LLM call that used to
@@ -11,163 +11,165 @@ the dependency direction is strictly routes -> agents -> services/models.
 import re
 from typing import Optional
 
+import json
+from functools import partial
+
+import config
+from agents import roles
 from agents.base import run_tool_agent
 from services.llm import get_llm_reply
-from tools.analytics import TOOL_GET_OPERATIONS_SUMMARY, execute_get_operations_summary
+from agents.base import PROMISE_REPLACEMENT, is_empty_promise
+from tools.analytics import TOOL_GET_OPERATIONS_SUMMARY, execute_get_operations_summary, format_ops_summary
 from tools.knowledge_base_tools import TOOL_SEARCH_KNOWLEDGE_BASE, execute_search_knowledge_base
 
-GENERAL_SYSTEM_PROMPT = """You are EcoBot, the friendly AI assistant for EcoTrack — a smart waste disposal management system. You help residents, drivers, and admins use the platform effectively.
+GENERAL_SYSTEM_PROMPT = """You are ShipBot, the friendly AI assistant for Shipora — a parcel delivery and fleet management platform. You help customers, delivery agents, and admins use the platform effectively.
 
 You ONLY answer questions related to:
-- EcoTrack features: live GPS vehicle tracking, collection schedules, proximity alerts
-- Waste disposal: types of waste (household, recyclable, organic, mixed), separation, best practices
-- Account management: profile updates, password changes, location settings, pickup schedule
-- Resident features: viewing live vehicle tracking, collection logs, filing complaints, anonymous complaints
-- Driver features: sharing GPS location, marking areas as completed, updating status and ETA
-- Admin features: monitoring drivers, viewing collection logs, managing complaints, editing support contact details
-- Complaints: how to submit, track status, anonymous submissions
+- Shipora features: creating shipments, live tracking by tracking number, delivery-vehicle tracking, status updates
+- Shipment lifecycle: created, pickup scheduled, picked up, in transit, out for delivery, delivered — and exceptions: delivery failed, customer unavailable, address issue, damaged, cancelled, returned to origin
+- Service: Shipora is a same-day delivery service that operates in Bengaluru only (pickup and drop must both be inside Bengaluru; no standard/express/multi-day options); parcel categories and packaging basics
+- Pricing and limits: __PRICING__
+- Account management: profile updates, password changes, saved address and delivery instructions
+- Customer features: creating and tracking shipments, reporting delivery issues
+- Delivery agent features: sharing live location, updating shipment status, updating area and ETA
+- Admin features: assigning agents to shipments, monitoring the fleet, managing delivery issues, editing support contact details
 - Support: contact details, working hours, FAQs
-- Waste collection schedules: daily, alternate days, weekly options
-- Resident types: independent house vs flat/apartment
-- Operational analytics (admin-facing): complaint counts/trends, today's collection activity, resolution times — use the get_operations_summary tool for these broad "how are things going" questions, never guess numbers. When you call it, report BOTH the complaint stats and the vehicle/collection activity it returns — don't summarize only one half.
+- Operational analytics (admin-facing): shipment counts by status, delivery-issue trends, today's deliveries, resolution times — use the get_operations_summary tool for these broad "how are things going" questions, never guess numbers. When you call it, report the shipment pipeline, the delivery-issue stats AND the vehicle activity it returns.
 
 Respond as if you're speaking to someone out loud, not writing a document:
 - Use short sentences and contractions ("you'll", "it's", "don't").
 - Never use markdown — no bold (**), no bullet points, no numbered lists, no headers.
-- Turn lists into natural spoken sentences instead. For multi-step instructions, walk through the steps conversationally ("First, open your dashboard. Then tap Live Tracking — you'll see the truck right there.") rather than itemizing them.
+- Turn lists into natural spoken sentences instead. For multi-step instructions, walk through the steps conversationally rather than itemizing them.
 - Add natural conversational phrases where they fit ("Sure!", "Good question,", "Here's the thing —").
 
-For example, instead of:
-"Waste should be segregated into biodegradable and non-biodegradable categories."
-Say:
-"Sure! You'll want to separate your waste into two groups — biodegradable, like food scraps, and non-biodegradable, like plastic bottles."
-
-If a question is completely unrelated to waste management or EcoTrack, say something like:
-"I'm EcoBot, and I can only help with EcoTrack and waste disposal stuff. For anything else, a general search engine's your best bet. Is there something about EcoTrack I can help with?"
+If a question is completely unrelated to parcel delivery or Shipora, say something like:
+"I'm ShipBot, and I can only help with Shipora and parcel delivery stuff. For anything else, a general search engine's your best bet. Is there something about Shipora I can help with?"
 
 Keep responses under 120 words unless the question genuinely needs more — this is spoken aloud, so shorter is better."""
+
+def _money(v: float) -> str:
+    return f"₹{v:g}"
+
+
+def _pricing_line() -> str:
+    return (f"the fare starts at {_money(config.FARE_BASE_INR)} and covers the first {config.FARE_INCLUDED_KM:g} km, then {_money(config.FARE_PER_KM_INR)} per extra km, plus {_money(config.FARE_PER_EXTRA_KG_INR)} per kg above {config.FARE_FREE_WEIGHT_KG:g} kg; "
+            f"parcels can weigh up to {config.MAX_PARCEL_KG:g} kg (bike delivery); payment is cash or UPI to the rider on delivery; "
+            "the exact fare and ETA are shown before booking. Never quote a price other than these numbers.")
+
+
+GENERAL_SYSTEM_PROMPT = GENERAL_SYSTEM_PROMPT.replace("__PRICING__", _pricing_line())
 
 # ─── Built-in rule-based knowledge base ─────────────────────────────────────
 KB = [
     {
-        "keys": ["track", "truck", "vehicle", "where", "location", "map", "live", "gps"],
-        "reply": "**How to track the waste truck:**\n"
-        "• Open your **Resident Dashboard** — the map shows all active vehicles in real time.\n"
-        "• When a truck comes within **3 km** of your home, a proximity alert appears and a route line is drawn to your door.\n"
-        "• The sidebar shows each vehicle's current area and ETA.",
+        "keys": ["track", "where", "location", "map", "live", "gps", "tracking number"],
+        "reply": "**Tracking a parcel:**\n"
+        "• Every shipment gets a tracking number starting with **SHP**.\n"
+        "• Enter it on the tracking page to see its current status and full timeline.\n"
+        "• Once it's out for delivery, the delivery vehicle's live position and ETA are shown on the map.",
     },
     {
-        "keys": ["complaint", "complain", "report", "issue", "problem", "raise"],
-        "reply": "**Filing a complaint:**\n"
-        "• Go to **Complaints** from your dashboard or the quick-actions panel.\n"
-        "• Click **+ New Complaint**, choose a category, add a subject and description (min 20 chars), then submit.\n"
-        "• Want privacy? Tick **Submit Anonymously** — your name won't be shared with admin.\n"
-        "• Track status (Open → In Progress → Resolved) in your complaint list.",
+        "keys": ["status", "lifecycle", "stages", "in transit", "out for delivery", "delivered"],
+        "reply": "**Shipment stages:**\n"
+        "• Created → Pickup Scheduled → Picked Up → In Transit → Out for Delivery → Delivered.\n"
+        "• Exceptions: Delivery Failed, Customer Unavailable, Address Issue, Damaged, Cancelled, Return to Origin.\n"
+        "• A delivery is attempted up to 3 times before the parcel is returned to the sender.",
+    },
+    {
+        "keys": ["create", "send", "book", "new shipment", "ship"],
+        "reply": "**Creating a shipment:**\n"
+        "• Log in as a customer and choose **New Shipment**.\n"
+        "• Enter the recipient's name, phone and address, plus parcel weight, category and declared value.\n"
+        "• Drop the pin for pickup and delivery on the map — both must be inside Bengaluru. Delivery is same-day, and you'll get a tracking number straight away.",
+    },
+    {
+        "keys": ["cancel"],
+        "reply": "**Cancelling a shipment:**\n"
+        "You can cancel a shipment yourself until it has been picked up. After pickup, contact support and an admin can arrange a return to origin.",
+    },
+    {
+        "keys": ["service", "express", "same day", "same-day", "standard", "delivery time", "how long", "bengaluru", "bangalore", "city", "area", "outside"],
+        "reply": "**Same-day delivery, Bengaluru only:**\n"
+        "• Every parcel is picked up and delivered the same day — there are no standard or express slots.\n"
+        "• Both the pickup and the delivery address must be inside Bengaluru.\n\n"
+        "The estimated delivery date is shown on every shipment.",
+    },
+    {
+        "keys": ["price", "fare", "cost", "charge", "how much", "pay", "payment", "cash", "upi", "kg", "weight", "heavy", "limit", "prohibited", "not allowed", "banned", "allowed", "carry", "can't", "cannot"],
+        "reply": "**Fare, limits and payment:**\n"
+        f"• The fare starts at {_money(config.FARE_BASE_INR)} and covers the first {config.FARE_INCLUDED_KM:g} km, then {_money(config.FARE_PER_KM_INR)} for every extra km.\n"
+        f"• Parcels above {config.FARE_FREE_WEIGHT_KG:g} kg add {_money(config.FARE_PER_EXTRA_KG_INR)} for every extra kg.\n"
+        f"• Parcels can weigh up to {config.MAX_PARCEL_KG:g} kg (we deliver by bike).\n"
+        "• You pay the rider on delivery, by cash or UPI.\n"
+        "• We can't carry flammables, alcohol, medicines, cash, jewellery, live animals or anything illegal.\n\n"
+        "You'll see the exact fare and ETA before you book.",
+    },
+    {
+        "keys": ["issue", "problem", "complaint", "complain", "report", "damaged", "lost", "delay", "late", "wrong address"],
+        "reply": "**Reporting a delivery issue:**\n"
+        "• Open **Delivery Issues**, choose a category (delayed, lost, damaged, wrong address, agent behaviour, failed delivery, other).\n"
+        "• Optionally link the shipment's tracking number, add a description, and submit.\n"
+        "• You can track its status (Open → In Progress → Resolved) and read the admin's reply.",
     },
     {
         "keys": ["anonymous", "privacy", "identity", "hide", "secret"],
-        "reply": "**Anonymous complaints:**\n"
-        "You can submit a complaint without revealing your identity.\n"
-        "• In the New Complaint form, tick **Submit Anonymously**.\n"
-        "• Your name and contact details are hidden from admin.\n"
-        "• Note: anonymous complaints cannot be tracked after submission — they won't appear in your list.",
-    },
-    {
-        "keys": ["schedule", "pickup", "daily", "alternate", "weekly", "frequency", "change schedule"],
-        "reply": "**Pickup schedules available:**\n"
-        "• **Daily** — collected every day\n"
-        "• **Alternate Days** — every other day\n"
-        "• **Weekly** — once a week\n\n"
-        "To change your schedule: go to **Profile → Collection Preferences** and select a new schedule. Changes take effect from the next cycle.",
-    },
-    {
-        "keys": ["waste type", "household", "recyclable", "organic", "mixed", "separate", "bin", "which waste"],
-        "reply": "**Waste types accepted:**\n"
-        "• **Mixed** — general waste\n"
-        "• **Household** — kitchen & home waste\n"
-        "• **Recyclable** — paper, plastic, glass, metal\n"
-        "• **Organic** — food scraps, garden waste\n\n"
-        "**Separation tip:** Green bin = organic, Blue = dry recyclables, Black = non-recyclable. Hazardous items (batteries, chemicals) are NOT accepted.",
-    },
-    {
-        "keys": ["log", "history", "collection log", "past", "previous", "record"],
-        "reply": "**Viewing collection logs:**\n"
-        "• **Residents** — go to **Collection Log** from your dashboard to see up to 30 days of collection records grouped by date.\n"
-        "• **Drivers** — go to **Collection History** to see your own 30-day log with areas covered and stats.\n"
-        "• **Admins** — the Collection Logs tab lets you filter by any date.",
+        "reply": "**Anonymous reports:**\n"
+        "You can report a delivery issue without revealing your identity — your name and contact details are hidden from admin. Anonymous reports can't be tracked afterwards.",
     },
     {
         "keys": ["profile", "edit", "update", "change name", "change phone", "change address"],
         "reply": "**Updating your profile:**\n"
-        "• Click **Profile** in the top navbar.\n"
-        "• Residents can edit: name, phone, address, waste type, pickup schedule, residence type, and home location.\n"
-        "• Drivers can edit: name, phone, and assigned area.\n"
-        "• Email, vehicle number, and licence are locked (contact admin to change).\n"
-        "• Scroll down to change your **password** anytime.",
+        "• Click **Profile** in the navbar.\n"
+        "• Customers can edit: name, phone, address, account type and delivery instructions.\n"
+        "• Delivery agents can edit: name, phone, delivery area and vehicle type.\n"
+        "• Email, vehicle number and licence are locked — contact admin to change them.",
     },
     {
         "keys": ["password", "forgot", "reset", "change password"],
         "reply": "**Password help:**\n"
         "• **Forgot password?** On the login page click **Forgot password?** — enter your email, select your role, then set a new password.\n"
-        "• **Change password** while logged in: go to **Profile** → scroll to the **Change Password** section → enter your current password and new password.",
+        "• **Change password** while logged in: go to **Profile** and use the **Change Password** section.",
     },
     {
-        "keys": ["driver", "driver dashboard", "start sharing", "gps", "broadcast", "area complete"],
-        "reply": "**Driver features:**\n"
-        "• Click **Start Sharing Location** to broadcast your GPS position live to all residents.\n"
-        "• Update **Current Area** and **ETA** in the status panel — residents see this in real time.\n"
-        "• Use **Areas Completed** to log zones you have finished — tap Add after typing the area name.\n"
-        "• Click **Save Status** to persist your status to the database.",
+        "keys": ["agent", "driver", "delivery agent", "start sharing", "broadcast", "area complete", "deliver"],
+        "reply": "**Delivery agent features:**\n"
+        "• Start sharing your live location so customers and admins can follow your vehicle.\n"
+        "• See your assigned shipments and update each one: picked up, in transit, out for delivery, delivered, or an exception.\n"
+        "• Keep your current area and ETA up to date.",
     },
     {
-        "keys": ["admin", "admin dashboard", "monitor", "overview"],
-        "reply": "**Admin dashboard tabs:**\n"
-        "• **Overview** — live driver feed, stats (active drivers, areas done, total residents).\n"
-        "• **Collection Logs** — filter by date, see all driver activity.\n"
-        "• **Complaints** — read and respond to resident complaints, update status.\n"
-        "• **Settings** — edit the support contact details (phone, email, WhatsApp, office address).",
+        "keys": ["admin", "admin dashboard", "monitor", "overview", "assign"],
+        "reply": "**Admin features:**\n"
+        "• Overview of shipments by status and the live fleet.\n"
+        "• Assign a delivery agent to a shipment — this schedules the pickup.\n"
+        "• Review tracking history, handle delivery issues, and edit the support contact details.",
     },
     {
         "keys": ["support", "contact", "help", "phone", "email", "whatsapp", "helpline", "call"],
         "reply": "**Getting support:**\n"
-        "Visit the **Support** page (Navbar → Support) for:\n"
-        "• Helpline number (24/7 toll-free)\n"
-        "• Email support (reply within 24 hrs)\n"
-        "• WhatsApp (Mon–Sat, 8 AM–8 PM)\n"
-        "• Municipal office address & hours\n\n"
-        "Admins can update these details in **Admin Dashboard → Settings**.",
-    },
-    {
-        "keys": ["residence", "flat", "apartment", "house", "independent", "resident type"],
-        "reply": "**Residence type:**\n"
-        "During registration (or in your Profile), you can set whether you live in an **Independent House** or a **Flat/Apartment**. This helps the waste management team optimise pickup routes for your area.",
-    },
-    {
-        "keys": ["proximity", "alert", "nearby", "near me", "3 km", "notification"],
-        "reply": "**Proximity alerts:**\n"
-        "When a waste truck comes within **3 km** of your registered home location:\n"
-        "• A green alert banner appears at the top of your dashboard.\n"
-        "• A route line is drawn on the map showing the road path to your home.\n"
-        "• The sidebar shows the driver name, vehicle number, and ETA.",
+        "Visit the **Support** page for the helpline, email, WhatsApp, office address and hours. Admins can update these details in the admin settings.",
     },
     {
         "keys": ["register", "sign up", "create account", "new account"],
         "reply": "**Creating an account:**\n"
-        "• Go to **Register** and pick your role: Resident, Driver, or Admin.\n"
-        "• Residents: fill in name, phone (10-digit Indian), email, waste type, schedule, residence type, and pin your home on the map.\n"
-        "• Drivers: add vehicle number (e.g. KA01AB1234) and driving licence number.\n"
+        "• Go to **Register** and pick your role: Customer, Delivery Agent, or Admin.\n"
+        "• Customers: name, phone, email, address and a pin on the map.\n"
+        "• Delivery agents: vehicle number and type, driving licence number and delivery area.\n"
         "• Admins: add organisation name.",
     },
     {
         "keys": ["login", "sign in", "cant login", "cannot login", "access"],
         "reply": "**Logging in:**\n"
-        "• Go to **Login**, select your role (Resident / Driver / Admin), enter email and password.\n"
+        "• Go to **Login**, select your role (Customer / Delivery Agent / Admin), enter email and password.\n"
         "• If you forgot your password, click **Forgot password?** below the form.\n"
-        "• Make sure you select the correct role — a resident login will not work with a driver account.",
+        "• Make sure you select the correct role — a customer login will not work with an agent account.",
     },
 ]
 
 _GREETING_RE = re.compile(r"^(hi|hello|hey|good\s*(morning|afternoon|evening)|howdy)", re.IGNORECASE)
+
+
+_OPS_INTENT_RE = re.compile(r"\b(summar\w*|operations?|performance|overview|how (?:are|is) (?:things|it|everything)|status report|today'?s? (?:numbers|stats|figures))\b", re.I)
 
 
 def _best_kb_match(query: str) -> Optional[dict]:
@@ -177,34 +179,37 @@ def _best_kb_match(query: str) -> Optional[dict]:
     lower = query.lower()
     best, best_score = None, 0
     for entry in KB:
-        score = sum(1 for k in entry["keys"] if k in lower)
+        # whole-word match ("live" must not fire inside "delivery"); multi-word keys are more specific, so they weigh more
+        score = sum(len(k.split()) for k in entry["keys"] if re.search(rf"(?<![\w-]){re.escape(k)}s?(?![\w-])", lower))
         if score > best_score:
             best_score, best = score, entry
     return best
 
 
-def rule_based_reply(msg: str) -> str:
+def rule_based_reply(msg: str, current_user: dict = None) -> str:
     lower = msg.lower()
     best = _best_kb_match(msg)
     if best:
         return best["reply"]
+    if _GREETING_RE.match(lower) and roles.role_of(current_user) != roles.ANON:
+        return roles.PROFILES[roles.role_of(current_user)]["greeting"]
     if _GREETING_RE.match(lower):
         return (
-            "Hello! I am **EcoBot** 🌿, your EcoTrack assistant.\n\n"
+            "Hello! I am **ShipBot** 📦, your Shipora assistant.\n\n"
             "I can help you with:\n"
-            "• Tracking waste collection vehicles\n"
-            "• Managing complaints\n"
-            "• Pickup schedules & waste types\n"
+            "• Tracking parcels and delivery vehicles\n"
+            "• Creating shipments\n"
+            "• Reporting delivery issues\n"
             "• Profile & account settings\n"
-            "• Driver and admin features\n\n"
+            "• Delivery agent and admin features\n\n"
             "What would you like to know?"
         )
     return (
-        "I am EcoBot and I can only help with EcoTrack and waste disposal topics. Try asking about:\n"
-        '• **Vehicle tracking** — "How do I track the truck?"\n'
-        '• **Complaints** — "How do I file a complaint?"\n'
-        '• **Schedule** — "How do I change my pickup schedule?"\n'
-        '• **Waste types** — "What waste types are accepted?"'
+        "I am ShipBot and I can only help with Shipora and parcel delivery topics. Try asking about:\n"
+        '• **Tracking** — "How do I track my parcel?"\n'
+        '• **Shipments** — "How do I create a shipment?"\n'
+        '• **Issues** — "How do I report a damaged parcel?"\n'
+        '• **Delivery** — "How long does delivery take?"'
     )
 
 
@@ -213,18 +218,31 @@ async def handle(message: str, history: list, sentiment: str = "neutral", curren
     below it: (1) Gemini tool-calling KB search + operations-summary
     lookup — grounds informational/analytics answers in real data rather
     than freeform recall; (2) the existing get_llm_reply (Gemini plain
-    text); (3) the existing rule_based_reply() keyword match, EcoTrack's
+    text); (3) the existing rule_based_reply() keyword match, Shipora's
     original zero-API-key safety net, completely unchanged."""
-    tools = [TOOL_SEARCH_KNOWLEDGE_BASE, TOOL_GET_OPERATIONS_SUMMARY]
-    executors = {
-        "search_knowledge_base": execute_search_knowledge_base,
-        "get_operations_summary": execute_get_operations_summary,
-    }
-    tool_reply = await run_tool_agent(GENERAL_SYSTEM_PROMPT, tools, executors, message, history, sentiment, on_stage=on_stage)
+    tools = [TOOL_SEARCH_KNOWLEDGE_BASE]
+    executors = {"search_knowledge_base": execute_search_knowledge_base}
+    if roles.role_of(current_user) == roles.ADMIN:   # company-wide numbers are for Operations only
+        tools.append(TOOL_GET_OPERATIONS_SUMMARY)
+        executors["get_operations_summary"] = partial(execute_get_operations_summary, current_user=current_user)
+    system = GENERAL_SYSTEM_PROMPT + roles.prompt_context(current_user)
+    ops_data = None
+    if roles.role_of(current_user) == roles.ADMIN and _OPS_INTENT_RE.search(message):
+        # Small local models often announce "let me check" and never call the tool, so for a plain ops-summary request
+        # fetch the numbers first and hand them over as authoritative context; every provider then only has to phrase them.
+        data = await execute_get_operations_summary(current_user=current_user)
+        ops_data = data
+        system += ("\n\nLive operations data, fetched just now (authoritative; answer only from it, and report the shipment "
+                   "pipeline, the delivery-issue numbers and the vehicle activity). Name each figure's reporting period exactly as given "
+                   "in the *PeriodText fields — shipment counts are all time, issue figures cover windowDays days, vehicles are today; "
+                   "never call a figure 'today's' unless it is the vehicle activity: " + json.dumps(data))
+    tool_reply = await run_tool_agent(system, tools, executors, message, history, sentiment, on_stage=on_stage)
+    if ops_data is not None and (tool_reply is None or tool_reply == PROMISE_REPLACEMENT or is_empty_promise(tool_reply)):
+        return {"reply": format_ops_summary(ops_data), "source": "builtin"}     # the numbers are in hand: state them, whatever the model did
     if tool_reply is not None:
         return {"reply": tool_reply, "source": "ai"}
 
-    reply = await get_llm_reply(message, history, GENERAL_SYSTEM_PROMPT)
+    reply = await get_llm_reply(message, history, system)
     if reply is None:
-        return {"reply": rule_based_reply(message), "source": "builtin"}
+        return {"reply": rule_based_reply(message, current_user), "source": "builtin"}
     return {"reply": reply, "source": "ai"}

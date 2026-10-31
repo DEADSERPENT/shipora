@@ -45,8 +45,8 @@ export default function ScrollToTopButton() {
         style={{
           position: 'fixed', bottom: 32, right: 32, zIndex: 999,
           width: 52, height: 52, borderRadius: '50%',
-          background: 'linear-gradient(145deg, #3a9a3a 0%, #1a3a1a 100%)',
-          color: '#fff', border: '2px solid rgba(134,239,172,0.35)',
+          background: 'linear-gradient(145deg, #2fb44a 0%, #0a3d14 100%)',
+          color: '#fff', border: '2px solid rgba(147,197,253,0.35)',
           cursor: 'pointer',
           boxShadow: '0 6px 20px rgba(26,58,26,0.4), inset 0 1px 0 rgba(255,255,255,0.15)',
           display: 'flex', flexDirection: 'column',
@@ -57,10 +57,10 @@ export default function ScrollToTopButton() {
       >
         {/* Double chevron arrow */}
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style={{ display: 'block' }}>
-          <path d="M4 13l5-5 5 5"  stroke="#86efac" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
-          <path d="M4 8.5l5-5 5 5" stroke="rgba(134,239,172,0.5)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+          <path d="M4 13l5-5 5 5"  stroke="#f8cb46" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+          <path d="M4 8.5l5-5 5 5" stroke="rgba(147,197,253,0.5)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
-        <span style={{ fontSize: 9, fontWeight: 800, color: '#86efac', letterSpacing: '0.06em', lineHeight: 1, textTransform: 'uppercase' }}>
+        <span style={{ fontSize: 9, fontWeight: 800, color: '#f8cb46', letterSpacing: '0.06em', lineHeight: 1, textTransform: 'uppercase' }}>
           TOP
         </span>
       </button>

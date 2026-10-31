@@ -1,4 +1,4 @@
-// Multilingual support for EcoBot's 'browser' voice mode (SpeechRecognition +
+// Multilingual support for ShipBot's 'browser' voice mode (SpeechRecognition +
 // speechSynthesis + Gemini via the existing /api/chat endpoint). NO backend
 // changes anywhere — language steering happens entirely by prefixing the
 // outgoing message text with a directive Gemini reads as part of the user's
@@ -270,7 +270,7 @@ export function detectScriptLanguage(text) {
 // Rate/pitch controls were removed from the UI — old persisted settings
 // objects may still have those keys from before, but loadSettings() only
 // ever reads language/voiceURI back out, so they're harmlessly ignored.
-const SETTINGS_KEY = 'eco_voice_settings';
+const SETTINGS_KEY = 'shipora_voice_settings';
 const DEFAULT_SETTINGS = { language: DEFAULT_LANGUAGE, voiceURI: null };
 
 export function loadSettings() {

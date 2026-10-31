@@ -1,11 +1,11 @@
-"""Tool schema + executor for EcoTrack support contact info."""
+"""Tool schema + executor for Shipora support contact info."""
 
 from models.support_config import SupportConfig
 from serializers import support_config_json
 
 TOOL_GET_SUPPORT_INFO = {
     "name": "get_support_info",
-    "description": "Fetch current EcoTrack support contact details (phone, email, WhatsApp, office hours/address).",
+    "description": "Fetch current Shipora support contact details (phone, email, WhatsApp, office hours/address).",
     "input_schema": {"type": "object", "properties": {}, "required": []},
 }
 

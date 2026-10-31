@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
+import AuthShell from '../components/AuthShell';
 import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
+import { Check, Eye, EyeOff, TriangleAlert } from 'lucide-react';
+import { Ic } from '../components/Icon';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
 const ROLES = [
-  { key: 'user',   label: '🏠 Resident' },
-  { key: 'driver', label: '🚛 Driver' },
-  { key: 'admin',  label: '🏢 Admin' },
+  { key: 'user',   label: 'Customer' },
+  { key: 'driver', label: 'Delivery Agent' },
 ];
 
 export default function ForgotPassword() {
@@ -16,6 +18,7 @@ export default function ForgotPassword() {
   const [step,        setStep]       = useState(1); // 1 = find account, 2 = set password
   const [role,        setRole]       = useState('user');
   const [email,       setEmail]      = useState('');
+  const [resetToken,  setResetToken] = useState('');
   const [newPassword, setNewPassword]= useState('');
   const [confirmPw,   setConfirmPw]  = useState('');
   const [showPw,      setShowPw]     = useState(false);
@@ -29,8 +32,13 @@ export default function ForgotPassword() {
     setError('');
     setLoading(true);
     try {
-      await axios.post(`${API}/auth/forgot-password`, { email, role });
-      setStep(2);
+      const { data } = await axios.post(`${API}/auth/forgot-password`, { email, role });
+      if (data.resetToken) {
+        setResetToken(data.resetToken);   // development: handed back directly (no e-mail service yet)
+        setStep(2);
+      } else {
+        setSuccess(data.message);          // production: instructions go out by e-mail, nothing to continue with here
+      }
     } catch (err) {
       setError(err.response?.data?.message || 'Could not verify account. Please try again.');
     } finally {
@@ -46,7 +54,7 @@ export default function ForgotPassword() {
     if (newPassword !== confirmPw) { setError('Passwords do not match.'); return; }
     setLoading(true);
     try {
-      const { data } = await axios.post(`${API}/auth/reset-password`, { email, role, newPassword });
+      const { data } = await axios.post(`${API}/auth/reset-password`, { email, role, newPassword, resetToken });
       setSuccess(data.message);
       setTimeout(() => navigate('/login'), 2500);
     } catch (err) {
@@ -57,26 +65,16 @@ export default function ForgotPassword() {
   };
 
   return (
-    <div className="page-center">
-      <div style={{ width: '100%', maxWidth: 440 }}>
-        {/* Branding */}
-        <div style={{ textAlign: 'center', marginBottom: 32 }}>
-          <div style={{ fontSize: 60, marginBottom: 8, filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.3))' }}>♻️</div>
-          <h1 style={{ color: '#fff', fontSize: 30, fontWeight: 800, marginBottom: 4, letterSpacing: '-0.5px' }}>
-            EcoTrack
-          </h1>
-          <p style={{ color: '#86efac', fontSize: 14 }}>Daily Waste Disposal Management System</p>
-        </div>
-
-        <div className="card" style={{ padding: '32px 36px' }}>
+    <AuthShell title="Reset your password" subtitle="We'll check your account, then let you choose a new password.">
+        <div>
           {/* Progress steps */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 24 }}>
             <StepDot n={1} active={step === 1} done={step > 1} label="Find Account" />
-            <div style={{ flex: 1, height: 2, background: step > 1 ? 'var(--green-600)' : 'var(--border)', borderRadius: 2, transition: 'background 0.3s' }} />
+            <div style={{ flex: 1, height: 2, background: step > 1 ? 'var(--brand-600)' : 'var(--border)', borderRadius: 2, transition: 'background 0.3s' }} />
             <StepDot n={2} active={step === 2} done={false} label="New Password" />
           </div>
 
-          <h2 style={{ fontSize: 20, fontWeight: 700, color: '#1a3a1a', marginBottom: 6 }}>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: '#0a3d14', marginBottom: 6 }}>
             {step === 1 ? 'Forgot Password' : 'Set New Password'}
           </h2>
           <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 20 }}>
@@ -96,10 +94,10 @@ export default function ForgotPassword() {
                   <button key={r.key} type="button" onClick={() => setRole(r.key)}
                     style={{
                       flex: 1, padding: '9px 4px',
-                      border: role === r.key ? '2px solid var(--green-700)' : '2px solid var(--border)',
+                      border: role === r.key ? '2px solid var(--brand-700)' : '2px solid var(--border)',
                       borderRadius: 10,
-                      background: role === r.key ? 'var(--green-50)' : '#fff',
-                      color: role === r.key ? 'var(--green-700)' : 'var(--muted)',
+                      background: role === r.key ? 'var(--brand-50)' : '#fff',
+                      color: role === r.key ? 'var(--brand-700)' : 'var(--muted)',
                       fontWeight: 700, fontSize: 12, cursor: 'pointer', transition: 'all 0.18s',
                     }}
                   >
@@ -145,7 +143,7 @@ export default function ForgotPassword() {
                       background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: 'var(--muted)',
                     }}
                   >
-                    {showPw ? '🙈' : '👁'}
+                    {showPw ? <Ic icon={EyeOff} /> : <Ic icon={Eye} />}
                   </button>
                 </div>
               </div>
@@ -163,7 +161,7 @@ export default function ForgotPassword() {
                 />
                 {confirmPw && confirmPw !== newPassword && (
                   <span style={{ fontSize: 11, color: 'var(--red)', marginTop: 4, display: 'block' }}>
-                    ⚠ Passwords do not match
+                    <Ic icon={TriangleAlert} /> Passwords do not match
                   </span>
                 )}
               </div>
@@ -181,18 +179,17 @@ export default function ForgotPassword() {
             </form>
           )}
 
-          <p style={{ textAlign: 'center', marginTop: 20, fontSize: 14, color: '#6b8f6b' }}>
+          <p style={{ textAlign: 'center', marginTop: 20, fontSize: 14, color: '#64748b' }}>
             Remember your password?{' '}
-            <Link to="/login" style={{ color: '#2d7a2d', fontWeight: 700 }}>Sign in</Link>
+            <Link to="/login" style={{ color: '#0c831f', fontWeight: 700 }}>Sign in</Link>
           </p>
         </div>
-      </div>
-    </div>
+    </AuthShell>
   );
 }
 
 function StepDot({ n, active, done, label }) {
-  const bg = done ? 'var(--green-600)' : active ? 'var(--green-700)' : 'var(--border)';
+  const bg = done ? 'var(--brand-600)' : active ? 'var(--brand-700)' : 'var(--border)';
   const color = (done || active) ? '#fff' : 'var(--muted)';
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
@@ -201,9 +198,9 @@ function StepDot({ n, active, done, label }) {
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontSize: 13, fontWeight: 700, transition: 'background 0.3s',
       }}>
-        {done ? '✓' : n}
+        {done ? <Ic icon={Check} size={15} strokeWidth={3} /> : n}
       </div>
-      <span style={{ fontSize: 10, color: active ? 'var(--green-700)' : 'var(--muted)', fontWeight: 600, whiteSpace: 'nowrap' }}>
+      <span style={{ fontSize: 10, color: active ? 'var(--brand-700)' : 'var(--muted)', fontWeight: 600, whiteSpace: 'nowrap' }}>
         {label}
       </span>
     </div>

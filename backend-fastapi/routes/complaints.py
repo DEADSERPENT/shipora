@@ -3,51 +3,51 @@ from typing import Literal, Optional
 
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from auth_utils import get_current_user
-from models.complaint import Complaint
-from serializers import complaint_json
+from models.delivery_issue import DeliveryIssue, IssueCategory
+from validation import LongText, ShortText, TrackingRef, is_object_id
+from serializers import delivery_issue_json
 from tools.complaint_tools import insert_complaint
 
-router = APIRouter(prefix="/api/complaints", tags=["Complaints"])
+router = APIRouter(prefix="/api/complaints", tags=["Delivery Issues"])
 
 
 class ComplaintBody(BaseModel):
-    subject: str
-    category: Literal["missed_pickup", "vehicle_issue", "timing", "cleanliness", "driver_behaviour", "other"]
-    description: str
+    subject: ShortText
+    category: IssueCategory
+    description: LongText
     isAnonymous: bool = False
+    trackingNumber: Optional[TrackingRef] = None  # link the issue to a shipment (must belong to the customer)
 
 
-@router.post("", status_code=201, summary="Resident: submit complaint")
+@router.post("", status_code=201, summary="Customer: report a delivery issue")
 async def create_complaint(body: ComplaintBody, current_user: dict = Depends(get_current_user)):
     if current_user["role"] != "user":
-        raise HTTPException(status_code=403, detail="Only residents can submit complaints.")
-    if not body.subject or not body.category or not body.description:
-        raise HTTPException(status_code=400, detail="Subject, category and description are required.")
+        raise HTTPException(status_code=403, detail="Only customers can report delivery issues.")
 
-    complaint = await insert_complaint(body.subject, body.category, body.description, body.isAnonymous, current_user)
-    return complaint_json(complaint)
+    complaint = await insert_complaint(body.subject, body.category, body.description, body.isAnonymous, current_user, body.trackingNumber)
+    return delivery_issue_json(complaint)
 
 
-@router.get("", summary="Get complaints (admin: all; resident: own)")
+@router.get("", summary="Get delivery issues (admin: all; customer: own)")
 async def get_complaints(current_user: dict = Depends(get_current_user)):
     if current_user["role"] == "admin":
-        complaints = await Complaint.find_all().sort(-Complaint.createdAt).to_list()
-        return [complaint_json(c, mask_anonymous=True) for c in complaints]
+        complaints = await DeliveryIssue.find_all().sort(-DeliveryIssue.createdAt).to_list()
+        return [delivery_issue_json(c, mask_anonymous=True) for c in complaints]
 
     complaints = (
-        await Complaint.find(Complaint.residentId == PydanticObjectId(current_user["id"]))
-        .sort(-Complaint.createdAt)
+        await DeliveryIssue.find(DeliveryIssue.customerId == PydanticObjectId(current_user["id"]))
+        .sort(-DeliveryIssue.createdAt)
         .to_list()
     )
-    return [complaint_json(c) for c in complaints]
+    return [delivery_issue_json(c) for c in complaints]
 
 
 class UpdateComplaintBody(BaseModel):
     status: Optional[Literal["open", "in_progress", "resolved", "closed"]] = None
-    adminReply: Optional[str] = None
+    adminReply: Optional[str] = Field(default=None, max_length=2000)
 
 
 @router.put("/{complaint_id}", summary="Admin: update status and reply")
@@ -55,9 +55,11 @@ async def update_complaint(complaint_id: str, body: UpdateComplaintBody, current
     if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin only.")
 
-    complaint = await Complaint.get(PydanticObjectId(complaint_id))
+    if not is_object_id(complaint_id):
+        raise HTTPException(status_code=404, detail="Delivery issue not found.")
+    complaint = await DeliveryIssue.get(PydanticObjectId(complaint_id))
     if not complaint:
-        raise HTTPException(status_code=404, detail="Complaint not found.")
+        raise HTTPException(status_code=404, detail="Delivery issue not found.")
 
     if body.status:
         complaint.status = body.status
@@ -67,4 +69,4 @@ async def update_complaint(complaint_id: str, body: UpdateComplaintBody, current
         complaint.resolvedAt = datetime.utcnow()
 
     await complaint.save()
-    return complaint_json(complaint)
+    return delivery_issue_json(complaint)

@@ -3,32 +3,26 @@ import {
   MapContainer, TileLayer, Marker, Popup, Circle, Polyline, useMap
 } from 'react-leaflet';
 import L from 'leaflet';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { haversine, BENGALURU } from '../lib/shipora';
+import { ArrowDownToLine, ArrowUpFromLine, House, MapPin, Navigation, Truck } from 'lucide-react';
+import { Ic } from './Icon';
 
-// ── Haversine distance (km) ────────────────────────────────────────────────
-function haversine(lat1, lng1, lat2, lng2) {
-  const R = 6371;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-// ── Custom icons (emoji-based DivIcon) ──────────────────────────────────────
-const makeIcon = (emoji, size = 36) =>
+// ── Custom markers: a lucide icon on a coloured disc, rendered to static SVG ─
+const makeIcon = (Icon, color, size = 38) =>
   L.divIcon({
     className: '',
-    html: `<div style="font-size:${size}px;line-height:1;filter:drop-shadow(1px 2px 4px rgba(0,0,0,0.35))">${emoji}</div>`,
+    html: `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center">${renderToStaticMarkup(<Icon size={Math.round(size * 0.52)} color="#fff" strokeWidth={2.2} />)}</div>`,
     iconSize: [size, size],
-    iconAnchor: [size / 2, size],
-    popupAnchor: [0, -size],
+    iconAnchor: [size / 2, size / 2],
+    popupAnchor: [0, -size / 2],
   });
 
-const homeIcon   = makeIcon('🏠', 36);
-const truckIcon  = makeIcon('🚛', 36);
-const myLocIcon  = makeIcon('📍', 32);
+const homeIcon     = makeIcon(House, '#0a5c16');
+const vehicleMark  = makeIcon(Truck, '#f97316', 40);
+const myLocIcon    = makeIcon(Navigation, '#0c831f');
+const pickupIcon   = makeIcon(ArrowUpFromLine, '#0c831f');
+const dropIcon     = makeIcon(ArrowDownToLine, '#15803d');
 
 // ── Fetch road route from OSRM (free, no key needed) ────────────────────────
 async function fetchOSRMRoute(fromLat, fromLng, toLat, toLng) {
@@ -55,14 +49,46 @@ function MapCenter({ center }) {
   return null;
 }
 
+// Fit the viewport around a list of [lat,lng] points whenever the set changes.
+function FitBounds({ points }) {
+  const map = useMap();
+  const key = points.map(p => p.join(',')).join('|');
+  useEffect(() => {
+    if (points.length > 1) map.fitBounds(points, { padding: [40, 40], maxZoom: 15 });
+    else if (points.length === 1) map.setView(points[0], 14);
+  }, [key, map]); // eslint-disable-line
+  return null;
+}
+
+const activeVehicles = (vehicles) => Object.values(vehicles).filter(v => v.lat && v.lng && v.isActive);
+
+function VehiclePopup({ v, extra }) {
+  return (
+    <div style={{ minWidth: 180 }}>
+      <b><Ic icon={Truck} /> {v.vehicleNo}</b><br />
+      <span>Agent: {v.driverName}</span><br />
+      <span>Area: {v.currentArea}</span><br />
+      <span>ETA: {v.eta}</span>
+      {extra}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// VehicleMap — used in both UserDashboard and DriverDashboard
+// VehicleMap — delivery-vehicle map used across Shipora.
+//
+// `role` selects the view (wire-level role names, kept for compatibility):
+//   'user'     – customer dashboard: customer's address + nearby delivery vehicles
+//   'driver'   – delivery agent: their own GPS position
+//   'admin'    – operations: the whole live delivery network
+//   'shipment' – one shipment: pickup + destination + the assigned vehicle
 //
 // Props:
-//   userLocation   – { lat, lng }  (user's home – only for 'user' view)
-//   vehicles       – { [driverId]: vehicleData }
-//   driverLocation – { lat, lng }  (driver's GPS – only for 'driver' view)
-//   role           – 'user' | 'driver'
+//   userLocation   – { lat, lng }  customer address ('user')
+//   vehicles       – { [agentId]: vehicleData }  live feed (keyed by `driverId`)
+//   driverLocation – { lat, lng }  agent GPS ('driver')
+//   origin, destination – { lat, lng, label } ('shipment')
+//   focusAgentId   – id of the assigned agent's vehicle ('shipment')
 //   RADIUS_KM      – default 3
 // ─────────────────────────────────────────────────────────────────────────────
 export default function VehicleMap({
@@ -70,95 +96,93 @@ export default function VehicleMap({
   vehicles = {},
   driverLocation,
   role = 'user',
-  RADIUS_KM = 3
+  RADIUS_KM = 3,
+  origin,
+  destination,
+  focusAgentId,
 }) {
-  const [routeCoords, setRouteCoords] = useState({});  // { driverId: [[lat,lng]...] }
-  // nearbyVehicles is derived for route-fetch side effects only
+  const [routeCoords, setRouteCoords] = useState({});  // { agentId: [[lat,lng]...] }
 
   const defaultCenter =
-    userLocation   ? [userLocation.lat, userLocation.lng]
+    userLocation     ? [userLocation.lat, userLocation.lng]
     : driverLocation ? [driverLocation.lat, driverLocation.lng]
-    : [20.5937, 78.9629];
+    : destination    ? [destination.lat, destination.lng]
+    : origin         ? [origin.lat, origin.lng]
+    : BENGALURU.center;
 
-  // ── Calculate distances & fetch routes ────────────────────────────────────
+  // ── Customer view: road route for vehicles within the radius ─────────────
   const processVehicles = useCallback(async () => {
     if (role !== 'user' || !userLocation) return;
-
-    const nearby = [];
     const newRoutes = {};
-
-    for (const v of Object.values(vehicles)) {
-      if (!v.lat || !v.lng || !v.isActive) continue;
-      const dist = haversine(userLocation.lat, userLocation.lng, v.lat, v.lng);
-      if (dist <= RADIUS_KM) {
-        nearby.push({ ...v, distance: dist });
-        // Fetch road route if within radius
+    for (const v of activeVehicles(vehicles)) {
+      if (haversine(userLocation.lat, userLocation.lng, v.lat, v.lng) <= RADIUS_KM) {
         const route = await fetchOSRMRoute(v.lat, v.lng, userLocation.lat, userLocation.lng);
         if (route) newRoutes[v.driverId] = route;
       }
     }
-
-    void nearby; // used for route-fetch side effects
     setRouteCoords(newRoutes);
   }, [vehicles, userLocation, role, RADIUS_KM]);
 
   useEffect(() => { processVehicles(); }, [processVehicles]);
 
+  // ── Shipment view: route from the assigned vehicle to the destination ────
+  const focus = role === 'shipment' && focusAgentId ? vehicles[focusAgentId] : null;
+  const focusLive = focus && focus.isActive && focus.lat ? focus : null;
+  const [shipRoute, setShipRoute] = useState(null);
+  const fromKey = focusLive ? `${focusLive.lat.toFixed(3)},${focusLive.lng.toFixed(3)}` : '';
+  useEffect(() => {
+    let cancelled = false;
+    if (focusLive && destination) {
+      fetchOSRMRoute(focusLive.lat, focusLive.lng, destination.lat, destination.lng).then(r => { if (!cancelled) setShipRoute(r); });
+    } else if (origin && destination) {
+      fetchOSRMRoute(origin.lat, origin.lng, destination.lat, destination.lng).then(r => { if (!cancelled) setShipRoute(r); });
+    } else {
+      setShipRoute(null);
+    }
+    return () => { cancelled = true; };
+  }, [fromKey, destination?.lat, destination?.lng, origin?.lat, origin?.lng]); // eslint-disable-line
+
+  const shipmentPoints = [origin, destination, focusLive].filter(Boolean).map(p => [p.lat, p.lng]);
+
   return (
     <MapContainer
       center={defaultCenter}
       zoom={14}
-      style={{ height: '100%', width: '100%', minHeight: 400 }}
+      minZoom={11}
+      maxBounds={BENGALURU.bounds}
+      maxBoundsViscosity={1.0}
+      style={{ height: '100%', width: '100%', minHeight: 320 }}
     >
       <TileLayer
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         attribution='© <a href="https://www.openstreetmap.org">OpenStreetMap</a>'
       />
 
-      {/* ── USER VIEW ────────────────────────────────────────────────────── */}
+      {/* ── CUSTOMER VIEW ────────────────────────────────────────────────── */}
       {role === 'user' && userLocation && (
         <>
-          {/* Home marker */}
           <Marker position={[userLocation.lat, userLocation.lng]} icon={homeIcon}>
-            <Popup><b>🏠 Your Home</b></Popup>
+            <Popup><b><Ic icon={House} /> Your address</b></Popup>
           </Marker>
-
-          {/* 3 km radius circle */}
           <Circle
             center={[userLocation.lat, userLocation.lng]}
             radius={RADIUS_KM * 1000}
-            pathOptions={{
-              color: '#2d7a2d', fillColor: '#4db84d',
-              fillOpacity: 0.06, weight: 2, dashArray: '8 6'
-            }}
+            pathOptions={{ color: '#0c831f', fillColor: '#2fb44a', fillOpacity: 0.06, weight: 2, dashArray: '8 6' }}
           />
-
-          {/* All active vehicles */}
-          {Object.values(vehicles).filter(v => v.lat && v.isActive).map(v => {
+          {activeVehicles(vehicles).map(v => {
             const dist = haversine(userLocation.lat, userLocation.lng, v.lat, v.lng);
             const isNear = dist <= RADIUS_KM;
             return (
               <React.Fragment key={v.driverId}>
-                <Marker position={[v.lat, v.lng]} icon={truckIcon}>
+                <Marker position={[v.lat, v.lng]} icon={vehicleMark}>
                   <Popup>
-                    <div style={{ minWidth: 180 }}>
-                      <b>🚛 {v.vehicleNo}</b><br />
-                      <span>Driver: {v.driverName}</span><br />
-                      <span>Area: {v.currentArea}</span><br />
-                      <span>ETA: {v.eta}</span><br />
-                      <span style={{ color: isNear ? '#2d7a2d' : '#d97706', fontWeight: 700 }}>
-                        {dist.toFixed(2)} km away {isNear ? '✅ Nearby!' : ''}
-                      </span>
-                    </div>
+                    <VehiclePopup v={v} extra={<><br /><span style={{ color: isNear ? '#15803d' : '#d97706', fontWeight: 700 }}>
+                      {dist.toFixed(2)} km away {isNear ? 'Nearby' : ''}
+                    </span></>} />
                   </Popup>
                 </Marker>
-
-                {/* Route line when within radius */}
                 {isNear && routeCoords[v.driverId] && (
-                  <Polyline
-                    positions={routeCoords[v.driverId]}
-                    pathOptions={{ color: '#2d7a2d', weight: 4, opacity: 0.85, dashArray: '12 4' }}
-                  />
+                  <Polyline positions={routeCoords[v.driverId]} pathOptions={{ color: '#0c831f', weight: 4, opacity: 0.85, dashArray: '12 4' }} />
                 )}
               </React.Fragment>
             );
@@ -166,13 +190,40 @@ export default function VehicleMap({
         </>
       )}
 
-      {/* ── DRIVER VIEW ──────────────────────────────────────────────────── */}
+      {/* ── DELIVERY AGENT VIEW ──────────────────────────────────────────── */}
       {role === 'driver' && driverLocation && (
         <>
           <Marker position={[driverLocation.lat, driverLocation.lng]} icon={myLocIcon}>
-            <Popup><b>📍 Your Current Location</b></Popup>
+            <Popup><b><Ic icon={MapPin} /> Your current location</b></Popup>
           </Marker>
           <MapCenter center={[driverLocation.lat, driverLocation.lng]} />
+        </>
+      )}
+
+      {/* ── OPERATIONS VIEW: whole network ───────────────────────────────── */}
+      {role === 'admin' && (
+        <>
+          {activeVehicles(vehicles).map(v => (
+            <Marker key={v.driverId} position={[v.lat, v.lng]} icon={vehicleMark}>
+              <Popup><VehiclePopup v={v} extra={<><br /><span>Zones covered: {v.areasCompleted?.length || 0}</span></>} /></Popup>
+            </Marker>
+          ))}
+          <FitBounds points={activeVehicles(vehicles).map(v => [v.lat, v.lng])} />
+        </>
+      )}
+
+      {/* ── SINGLE SHIPMENT VIEW ─────────────────────────────────────────── */}
+      {role === 'shipment' && (
+        <>
+          {origin && <Marker position={[origin.lat, origin.lng]} icon={pickupIcon}><Popup><b><Ic icon={ArrowUpFromLine} /> Pickup</b><br />{origin.label}</Popup></Marker>}
+          {destination && <Marker position={[destination.lat, destination.lng]} icon={dropIcon}><Popup><b><Ic icon={ArrowDownToLine} /> Delivery</b><br />{destination.label}</Popup></Marker>}
+          {focusLive && (
+            <Marker position={[focusLive.lat, focusLive.lng]} icon={vehicleMark}>
+              <Popup><VehiclePopup v={focusLive} /></Popup>
+            </Marker>
+          )}
+          {shipRoute && <Polyline positions={shipRoute} pathOptions={{ color: focusLive ? '#f97316' : '#0c831f', weight: 4, opacity: 0.85, dashArray: focusLive ? '12 4' : undefined }} />}
+          <FitBounds points={shipmentPoints} />
         </>
       )}
     </MapContainer>

@@ -1,4 +1,4 @@
-"""Gemini-only LLM abstraction for EcoBot's plain-text fallback tier
+"""Gemini-only LLM abstraction for ShipBot's plain-text fallback tier
 (general_agent's tier 2, reached only if Gemini tool-calling AND Gemini
 plain-text both somehow fail elsewhere — see agents/base.py, which owns
 classification and tool-calling).
@@ -8,19 +8,31 @@ OPENAI_API_KEY still exists in config.py, but only for STT/TTS
 (services/stt.py/tts.py) — an unrelated code path, not this file.
 """
 
+import logging
 import asyncio
 from typing import List, Optional
 
 import config
+from services import gemini_client, ollama_client
+log = logging.getLogger("shipora.llm")
 
 
 async def get_llm_reply(message: str, history: List[dict], system_prompt: str) -> Optional[str]:
     """Returns the Gemini reply, or None if no usable API key is configured
     (caller should fall back to the rule-based knowledge base)."""
+    if ollama_client.enabled():
+        try:
+            return await ollama_client.reply(message, history, system_prompt)
+        except Exception as err:
+            log.warning("Ollama plain-text call failed; falling back to built-in replies", extra={"event": "llm_failed", "provider": "ollama", "error_type": type(err).__name__})
+            return None
+    if gemini_client.is_unavailable():
+        return None
     try:
         return await asyncio.to_thread(_gemini_reply, message, history, system_prompt)
     except Exception as err:
-        print(f"gemini API error, falling back to built-in: {err}")
+        gemini_client.note_failure(err)
+        log.warning("Gemini plain-text call failed; falling back to built-in replies", extra={"event": "llm_failed", "error_type": type(err).__name__, "error": str(err)[:200]})
         return None
 
 
@@ -46,5 +58,6 @@ def _gemini_reply(message: str, history: List[dict], system_prompt: str) -> Opti
             for h in history[-10:]
         ]
     )
-    response = convo.send_message(message)
+    response = convo.send_message(message, request_options=gemini_client.request_options())
+    gemini_client.note_success()
     return response.text

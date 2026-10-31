@@ -1,6 +1,6 @@
-# EcoBot Voice-AI Architecture
+# ShipBot Voice-AI Architecture
 
-EcoBot is EcoTrack's in-app assistant. It's a **Speech-to-Text → Multi-Agent LLM
+ShipBot is Shipora's in-app assistant. It's a **Speech-to-Text → Multi-Agent LLM
 → Text-to-Speech "sandwich"** — three independent, swappable stages connected by
 plain text, not an end-to-end speech-to-speech model. This document describes
 that pipeline, how it's looped into a continuous conversation, and maps each of
@@ -28,7 +28,7 @@ POST /api/voice/chat  (frontend/src/components/ChatBot.js)
   ▼
 voice/pipeline.py: run_voice_turn()
   │
-  ├─▶ services/stt.py — OpenAI Whisper           [emits voice:stage "transcribing"]
+  ├─▶ services/stt.py — OpenAI Whisper, local faster-whisper or ONNX Whisper           [emits voice:stage "transcribing"]
   │     audio bytes -> transcript text
   │
   ├─▶ memory/conversation_memory.py.get_history(sessionId)   (MongoDB, see below)
@@ -42,8 +42,9 @@ voice/pipeline.py: run_voice_turn()
   │   ▼               ▼                  ▼                ▼                ▼
   │ tracking_agent  complaints_agent  schedule_agent   support_agent    general_agent
   │ (tools/          (tools/           (tools/          (tools/          (tier 0: tools/
-  │  tracking_       complaint_        schedule_        support_          knowledge_base_
-  │  tools.py)        tools.py)         tools.py)        tools.py)         tools.py;
+  │  tracking_ +     complaint_        schedule_        support_          knowledge_base_
+  │  shipment_        tools.py)         tools.py)        tools.py)         tools.py;
+  │  tools.py)
   │                                                                        tier 1: services/
   │                                                                        llm.py; tier 2:
   │                                                                        rule_based_reply)
@@ -57,8 +58,9 @@ voice/pipeline.py: run_voice_turn()
   │
   ├─▶ memory/conversation_memory.py.append_turn() × 2  (user turn, assistant turn)
   │
-  ├─▶ services/tts.py — OpenAI TTS  (skipped if speak=false)
-  │     text -> MP3 bytes
+  ├─▶ services/tts.py — OpenAI TTS or local Piper  (skipped if speak=false)
+  │     reply text -> speech_text() (markdown/bullets stripped, line breaks -> pauses)
+  │     -> audio bytes: MP3 (openai) or WAV (piper); the route reports which in audioMimeType
   │
   └─▶ ChatAnalytics write (sidecar, non-blocking — voice/pipeline.py's
         log_analytics(), swallows errors so a logging failure never breaks
@@ -77,9 +79,9 @@ voice/pipeline.py: run_voice_turn()
 | Concept | Where it lives | Design note |
 |---|---|---|
 | **Architecture of Voice Agents** | This document + `agents/orchestrator.py` + `voice/pipeline.py` | Router-classifies-then-dispatches: one cheap classification call picks a specialist, each specialist gets a scoped prompt + real tool(s) from `tools/`, with a shared 3-tier fallback (`general_agent`) so nothing ever produces a dead end. `voice/pipeline.py` is the one place the STT→memory→orchestrator→TTS sequence is assembled; `routes/chat.py`/`routes/voice.py` are thin HTTP wrappers around it. |
-| **STT Models** | `services/stt.py` | **Only OpenAI Whisper (`whisper-1`) is implemented.** Structured as an `STTProvider` abstract base class with one concrete `OpenAIWhisperProvider` — adding a second provider (e.g. Deepgram) means writing one new class and adding it to `_PROVIDERS`, without touching `transcribe_audio()` or any caller. Do not read "provider interface" as "multiple providers already work." |
-| **TTS Models** | `services/tts.py` | **Only OpenAI TTS (`tts-1`) is implemented**, same `TTSProvider` structure, same one-class-to-extend story. Replies are trimmed to 800 chars before synthesis. |
-| **LLMs in Voice AI** | `services/llm.py` (Gemini-only) + `agents/base.py` (Gemini tool-calling) | Gemini is the only LLM anywhere in the codebase — `services/llm.py`'s *text-only* call (used by `general_agent`'s tier 1 fallback) and the specialist agents' *tool-calling* (`agents/base.py`, gated on `GEMINI_API_KEY`) both go through Gemini. `OPENAI_API_KEY` still exists but is only used by STT/TTS (`services/stt.py`/`services/tts.py`), a completely separate code path. |
+| **STT Models** | `services/stt.py` | **Three providers**, chosen by `STT_PROVIDER`: `openai` (default, `whisper-1`), `faster_whisper` (local, CTranslate2) and `onnx_local` (local Whisper on ONNX Runtime — for machines where CTranslate2 can't load); the local ones need no API key and are an optional install, see `docs/LOCAL_VOICE.md`. Structured as an `STTProvider` abstract base class; adding another provider means writing one new class and adding it to `_PROVIDERS`, without touching `transcribe_audio()` or any caller. `onnx_local` has been run end to end on real audio on one machine; `faster_whisper` is tested with mocks only. No accuracy benchmark exists for either. |
+| **TTS Models** | `services/tts.py` | **Two providers**, chosen by `TTS_PROVIDER`: `openai` (default, `tts-1`, returns MP3) and `piper` (local, no API key, returns WAV — English is the tested language). Same `TTSProvider` structure and one-class-to-extend story. `/api/voice/chat` reports the real format in `audioMimeType`. Replies are trimmed to 800 chars before synthesis. |
+| **LLMs in Voice AI** | `services/llm.py` (Gemini-only) + `agents/base.py` (Gemini tool-calling) | Gemini is the only LLM anywhere in the codebase — `services/llm.py`'s *text-only* call (used by `general_agent`'s tier 1 fallback) and the specialist agents' *tool-calling* (`agents/base.py`, gated on `GEMINI_API_KEY`) both go through Gemini. `OPENAI_API_KEY` still exists but is only used by the OpenAI STT/TTS providers (`services/stt.py`/`services/tts.py`) — and only when `STT_PROVIDER`/`TTS_PROVIDER` is `openai` — a completely separate code path. |
 | **Speech Analytics** | `models/chat_analytics.py`, `routes/analytics.py`, `frontend/src/components/ChatAnalyticsTab.js` | Every turn logs which agent handled it, sentiment, per-stage latency (STT/LLM/TTS/total), and whether the reply was AI-generated or a rule-based fallback — surfaced on an admin-only dashboard. |
 | **Multi-Agent Orchestration** | `agents/orchestrator.py` + `agents/{tracking,complaints,schedule,support}_agent.py` + `tools/` | Real dispatch to specialists, each with its own system prompt and one-or-more DB-backed tools (see "Tools" below) — not prompt-stuffing. Capped at 2 Gemini calls per specialist turn (`agents/base.py`). |
 
@@ -91,14 +93,15 @@ without calling a tool for it:
 
 | Tool | File | What it does |
 |---|---|---|
-| `get_vehicle_status` | `tools/tracking_tools.py` | Live `VehicleLog` + `Driver` lookup for today's active vehicles; optional `area` or `vehicleNo` filter — `vehicleNo` lets a follow-up like "when was **it** last updated?" re-verify via a narrow tool call instead of answering from memory. |
-| `get_complaint_status` | `tools/complaint_tools.py` | The logged-in resident's own complaints from `Complaint`. |
-| `create_complaint` | `tools/complaint_tools.py` | **Writes** a new `Complaint` row — shares `insert_complaint()` with `routes/complaints.py`'s REST endpoint, so the voice tool and the REST API never diverge on how a complaint gets written. |
-| `list_complaints_admin` | `tools/complaint_tools.py` | Admin-only cross-resident complaint listing/counts, filterable by status/category/day-window — checks `current_user["role"]=="admin"` itself and returns an honest `{"note": ...}"}` if not, rather than the model refusing on its own assumption. |
-| `get_collection_schedule` | `tools/schedule_tools.py` | The logged-in resident's own `pickupSchedule`/`wasteType`/`residentType` from `User` — real per-user data, not the static "what schedules exist" text. |
+| `get_vehicle_status` | `tools/tracking_tools.py` | Live `TrackingLog` + `DeliveryAgent` lookup for today's active vehicles that have reported recently (a vehicle that stopped sending GPS is no longer listed as live); optional `area` or `vehicleNo` filter — `vehicleNo` lets a follow-up like "when was **it** last updated?" re-verify via a narrow tool call instead of answering from memory. |
+| `get_complaint_status` | `tools/complaint_tools.py` | The logged-in customer's own delivery issues from `DeliveryIssue` (the REST API and collection keep the legacy name "complaints"). |
+| `create_complaint` | `tools/complaint_tools.py` | **Writes** a new `DeliveryIssue` row, optionally linked to a shipment by tracking number — shares `insert_complaint()` with `routes/complaints.py`'s REST endpoint, so the voice tool and the REST API never diverge on how a complaint gets written. |
+| `list_complaints_admin` | `tools/complaint_tools.py` | Admin-only delivery-issue listing/counts across all customers, filterable by status/category/day-window — checks `current_user["role"]=="admin"` itself and returns an honest `{"note": ...}"}` if not, rather than the model refusing on its own assumption. |
+| `get_my_shipments` | `tools/schedule_tools.py` | The logged-in customer's own recent shipments (tracking number, status, `isActive`, pickup time, estimated delivery) — real per-user data, scoped to the caller (the tool takes no customer id). Offered by both `schedule_agent` and `tracking_agent`: "Where is my parcel?" without a tracking number is answered from it directly when exactly one shipment is active, and the customer is asked which one when several are. |
+| `get_shipment_status` | `tools/shipment_tools.py` | Public status + timeline for a tracking number (no personal data). Offered by `tracking_agent` together with `get_vehicle_status` and `get_my_shipments`. By design it is a public lookup — the tracking number is the credential, exactly as on the public tracking page — so any caller who has a number can read its status. |
 | `get_support_info` | `tools/support_tools.py` | Current `SupportConfig` contact details. |
 | `search_knowledge_base` | `tools/knowledge_base_tools.py` | Wraps the same KB-matching logic `rule_based_reply()` uses (`agents/general_agent.py`'s `_best_kb_match()`), so even the zero-key fallback and the tool-calling tier agree on one scoring implementation. |
-| `get_operations_summary` | `tools/analytics.py` | Cross-cutting complaint stats (by status/category, avg resolution time) + today's vehicle/collection activity — plain-Python aggregation over `Complaint`/`VehicleLog`, same demo-scale style `routes/analytics.py` already uses. Bound into `general_agent` since it spans multiple domains rather than one specialist. |
+| `get_operations_summary` | `tools/analytics.py` | Cross-cutting operations stats: shipment counts by status, delivery-issue stats (by status/category, avg resolution time) + today's vehicle/delivery activity — plain-Python aggregation over `Shipment`/`DeliveryIssue`/`TrackingLog`, same demo-scale style `routes/analytics.py` already uses. Bound into `general_agent` since it spans multiple domains rather than one specialist. |
 
 **`create_complaint` requires a confirmation turn.** `agents/complaints_agent.py`'s
 system prompt instructs the model to summarize the complaint (subject,
@@ -120,9 +123,11 @@ Both LLM surfaces go through Gemini exclusively:
   (`google-generativeai`'s `tools=`/`tool_config` params), gated on
   `GEMINI_API_KEY`.
 
-`OPENAI_API_KEY` still exists in `config.py`, but only for STT/TTS
-(`services/stt.py`/`services/tts.py`, Whisper) — a completely separate code
-path with no bearing on reasoning/classification/tool-calling.
+`OPENAI_API_KEY` still exists in `config.py`, but only for the OpenAI STT/TTS
+providers (`services/stt.py`/`services/tts.py`, Whisper and `tts-1`), and only
+while those providers are selected — a completely separate code path with no
+bearing on reasoning/classification/tool-calling. The local providers
+(`faster_whisper`/`onnx_local`, `piper`) need no API key at all.
 
 Tool schemas in `tools/*.py` stay in the original `{"name", "description",
 "input_schema"}` shape everywhere — only `agents/base.py`'s call boundary
@@ -281,15 +286,43 @@ proof generation is complete.
 
 ## Degradation matrix
 
-| `GEMINI_API_KEY` | `OPENAI_API_KEY` | Text chat | Voice chat |
-|---|---|---|---|
-| unset | unset | Keyword-routed, rule-based KB reply (`source: "builtin"`) — unchanged from the original zero-key behavior | `422` — "voice isn't available right now" |
-| set | unset | Full multi-agent routing + tool-calling works | `422` — STT can't run (Whisper needs `OPENAI_API_KEY`) |
-| unset | set | Keyword-routed, rule-based KB replies only (no tool-calling) | STT works, reply is rule-based text, TTS speaks it |
-| set | set | Full pipeline: classify → specialist (with tool) or general → reply | Full pipeline including STT + TTS + live stage events |
+The three stages degrade independently:
+
+| Stage | Works when | When it can't run |
+|---|---|---|
+| Reasoning (Gemini) | `GEMINI_API_KEY` is set and Gemini is reachable | Keyword-routed, rule-based KB reply (`source: "builtin"`); no tool-calling, so no live shipment/vehicle/issue lookups. This also applies when Gemini is *down*: see below |
+| STT | `openai`: `OPENAI_API_KEY` set. `faster_whisper` / `onnx_local`: package + model present and loadable (no key) | `/api/voice/chat` returns `422` — "voice isn't available right now". The same `422` is returned for a silent/empty recording |
+| TTS | `openai`: `OPENAI_API_KEY` set. `piper`: package + voice file present (no key) | The reply is returned as text with no audio (`audioBase64: null`); the conversation continues |
+
+So, for example: with no API keys at all, `STT_PROVIDER=onnx_local` + `TTS_PROVIDER=piper` still gives a working voice
+loop with rule-based replies; adding `GEMINI_API_KEY` upgrades the reasoning to full multi-agent routing with tool-calling
+and live stage events. With the default `openai` providers and no `OPENAI_API_KEY`, text chat works but voice returns `422`.
+Setup for the local providers: `docs/LOCAL_VOICE.md`.
+
+**Gemini outages.** Every Gemini call has a hard time budget (`GEMINI_TIMEOUT_SECONDS`, default 20 s, with retries only inside
+it), because the library's own default retries for up to 10 minutes and one turn chains several calls. After an outage-type
+failure (timeout, no network/DNS, 5xx, quota) all Gemini calls are skipped for `GEMINI_COOLDOWN_SECONDS` (default 30 s) and the
+turn uses the built-in fallbacks straight away — so a dead network costs one budget, once, not one per call. A successful
+call clears the cooldown; request-level errors (a bad argument, a slow *database* tool) do not trip it. Measured with Gemini
+unreachable and an 8 s budget: first request 10 s (then fallback), requests in the cooldown 2 s, a voice turn 4.6 s.
+Details: `services/gemini_client.py`.
+
+**Dates.** Tools that return dates (`get_shipment_status`, `get_my_shipments`) also return ready-made customer-facing text
+(`estimatedDeliveryText`, `pickupScheduledText`, `deliveredOnText`, e.g. "Monday, 12 October 2026") and the agent prompts
+forbid "today"/"tomorrow"/"in N days": the model does not know today's date, and once said "by today" for a delivery 5 days away.
 
 Every Gemini call site (`agents/orchestrator.py:classify()`,
 `agents/base.py:run_tool_agent()`, `services/llm.py:_gemini_reply()`) checks
 `config.GEMINI_API_KEY in config.PLACEHOLDER_VALUES` before attempting a
-call — the same convention used throughout. `OPENAI_API_KEY` only gates
-STT/TTS now, not any reasoning path.
+call — the same convention used throughout. `OPENAI_API_KEY` only gates the
+OpenAI STT/TTS providers, not any reasoning path.
+
+## Verification and resilience (added)
+
+* `backend-fastapi/scripts/verify_sandwich.py` exercises each stage with the real providers and the full
+  `/api/voice/chat` round trip; `tests/test_voice_sandwich.py` covers the same flow in CI with STT/TTS stubbed.
+* Voice turns use a tighter LLM budget (`GEMINI_VOICE_TIMEOUT_SECONDS`, default 8 s) than chat.
+* If the LLM is unavailable, a tracking question containing a tracking number is still answered from the database
+  (`agents/tracking_agent.py: fallback`), reported with `source: "builtin"`.
+* Spelled tracking numbers are extracted tolerantly, and a mis-heard one is repaired only against the signed-in
+  customer's own shipments (`tools/shipment_tools.py`).

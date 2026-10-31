@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
+import pymongo
 from beanie import Document, Insert, Replace, Save, before_event
 
 from auth_utils import compare_password
@@ -17,6 +18,7 @@ class Admin(Document):
 
     class Settings:
         name = "admins"
+        indexes = [pymongo.IndexModel([("email", pymongo.ASCENDING)], unique=True)]  # one account per e-mail, enforced by MongoDB (not just the sign-up check)
 
     @before_event(Insert)
     def _on_insert(self):

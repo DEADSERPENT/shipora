@@ -9,20 +9,27 @@ import config
 
 
 def hash_password(plain: str) -> str:
-    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt(rounds=12)).decode()
+    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt(rounds=config.bcrypt_rounds())).decode()
 
 
 def compare_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
+def _secret() -> str:
+    # No fallback: a missing secret must never silently become a guessable one.
+    if not config.JWT_SECRET:
+        raise config.ConfigError("JWT_SECRET is not configured")
+    return config.JWT_SECRET
+
+
 def sign_token(payload: dict) -> str:
     to_encode = {**payload, "exp": datetime.now(timezone.utc) + timedelta(days=7)}
-    return jwt.encode(to_encode, config.JWT_SECRET, algorithm="HS256")
+    return jwt.encode(to_encode, _secret(), algorithm="HS256")
 
 
 def verify_token(token: str) -> dict:
-    return jwt.decode(token, config.JWT_SECRET, algorithms=["HS256"])
+    return jwt.decode(token, _secret(), algorithms=["HS256"])
 
 
 async def get_current_user(request: Request) -> dict:

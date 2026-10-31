@@ -16,6 +16,7 @@ class ChatAnalytics(Document):
     source: Literal["ai", "builtin"]
     sttConfidence: Optional[float] = None
     latencyMs: dict = {}
+    metrics: dict = {}          # per-turn instrumentation: stage timings, provider call counts, provider errors (services/metrics.py)
     createdAt: Optional[datetime] = None
     updatedAt: Optional[datetime] = None
 

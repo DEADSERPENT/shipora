@@ -15,9 +15,9 @@ export default function BackButton({ label = 'Back', to }) {
         transition: 'all 0.18s', marginBottom: 20,
       }}
       onMouseEnter={e => {
-        e.currentTarget.style.borderColor = 'var(--green-600)';
-        e.currentTarget.style.color = 'var(--green-700)';
-        e.currentTarget.style.background = 'var(--green-50)';
+        e.currentTarget.style.borderColor = 'var(--brand-600)';
+        e.currentTarget.style.color = 'var(--brand-700)';
+        e.currentTarget.style.background = 'var(--brand-50)';
       }}
       onMouseLeave={e => {
         e.currentTarget.style.borderColor = 'var(--border)';

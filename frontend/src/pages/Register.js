@@ -2,6 +2,11 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import LocationPicker from '../components/LocationPicker';
+import AuthShell from '../components/AuthShell';
+import { CUSTOMER_TYPES, ROLE_LABELS, VEHICLE_TYPES, apiError, roleHome } from '../lib/shipora';
+import { Building2, TriangleAlert, Truck, User } from 'lucide-react';
+import { Ic } from '../components/Icon';
+import PasswordInput from '../components/PasswordInput';
 
 // ── Validators ────────────────────────────────────────────────────────────────
 const PHONE_RE   = /^[6-9]\d{9}$/;
@@ -20,27 +25,14 @@ function FieldHint({ show, text }) {
 }
 function FieldError({ show, text }) {
   if (!show) return null;
-  return <span style={{ fontSize: 11, color: 'var(--red)', marginTop: 4, display: 'block' }}>⚠ {text}</span>;
+  return <span style={{ fontSize: 11, color: 'var(--red)', marginTop: 4, display: 'block' }}><Ic icon={TriangleAlert} /> {text}</span>;
 }
 
-// ── Waste / Schedule options ──────────────────────────────────────────────────
-const WASTE_TYPES = [
-  { value: 'mixed',      label: '🗑️ Mixed Waste' },
-  { value: 'household',  label: '🏠 Household' },
-  { value: 'recyclable', label: '♻️ Recyclable' },
-  { value: 'organic',    label: '🌿 Organic' },
-];
-const SCHEDULES = [
-  { value: 'daily',     label: '📅 Daily' },
-  { value: 'alternate', label: '📆 Alternate Days' },
-  { value: 'weekly',    label: '🗓️ Weekly' },
-];
-
-// ── User Form ─────────────────────────────────────────────────────────────────
+// ── Customer Form ─────────────────────────────────────────────────────────────────
 function UserForm({ onSubmit, loading, error }) {
   const [form, setForm] = useState({
     name: '', email: '', password: '', phone: '',
-    address: '', wasteType: 'mixed', pickupSchedule: 'daily', residentType: 'house',
+    address: '', customerType: 'individual', deliveryInstructions: '',
   });
   const [location,  setLocation]  = useState(null);
   const [formError, setFormError] = useState('');
@@ -55,7 +47,7 @@ function UserForm({ onSubmit, loading, error }) {
   const submit = (e) => {
     e.preventDefault();
     if (!phoneOk)  { setFormError('Enter a valid 10-digit Indian mobile number (starts with 6–9).'); return; }
-    if (!location) { setFormError('Please select your home location on the map.'); return; }
+    if (!location) { setFormError('Please select your address location on the map.'); return; }
     setFormError('');
     onSubmit({ ...form, location }, 'user');
   };
@@ -91,71 +83,58 @@ function UserForm({ onSubmit, loading, error }) {
         </div>
         <div className="form-group">
           <label>Password</label>
-          <input required type="password" value={form.password} onChange={e => set('password', e.target.value)} placeholder="Min 6 characters" minLength={6} />
+          <PasswordInput required value={form.password} onChange={e => set('password', e.target.value)} placeholder="Min 6 characters" minLength={6} />
         </div>
       </div>
       <div className="form-group">
-        <label>Residence Type</label>
-        <div style={{ display: 'flex', gap: 12, marginTop: 4 }}>
-          {[
-            { value: 'house', label: '🏠 Independent House' },
-            { value: 'flat',  label: '🏢 Flat / Apartment' },
-          ].map(r => (
+        <label>Account Type</label>
+        <div style={{ display: 'flex', gap: 12, marginTop: 4, flexWrap: 'wrap' }}>
+          {CUSTOMER_TYPES.map(r => (
             <label key={r.value} style={{
-              flex: 1, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+              flex: '1 1 160px', display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
               padding: '10px 14px', borderRadius: 8,
-              border: `1.5px solid ${form.residentType === r.value ? 'var(--green-600)' : 'var(--border)'}`,
-              background: form.residentType === r.value ? 'var(--green-50)' : '#fff',
+              border: `1.5px solid ${form.customerType === r.value ? 'var(--brand-600)' : 'var(--border)'}`,
+              background: form.customerType === r.value ? 'var(--brand-50)' : '#fff',
               transition: 'all 0.15s',
             }}>
               <input
-                type="radio" name="residentType" value={r.value}
-                checked={form.residentType === r.value}
-                onChange={() => set('residentType', r.value)}
-                style={{ accentColor: 'var(--green-600)' }}
+                type="radio" name="customerType" value={r.value}
+                checked={form.customerType === r.value}
+                onChange={() => set('customerType', r.value)}
+                style={{ accentColor: 'var(--brand-600)' }}
               />
-              <span style={{ fontSize: 14, fontWeight: 600 }}>{r.label}</span>
+              <span style={{ fontSize: 14, fontWeight: 600 }}><Ic icon={r.icon} /> {r.label}</span>
             </label>
           ))}
         </div>
       </div>
-      <div className="form-row">
-        <div className="form-group">
-          <label>Waste Type</label>
-          <select value={form.wasteType} onChange={e => set('wasteType', e.target.value)}>
-            {WASTE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-          </select>
-        </div>
-        <div className="form-group">
-          <label>Pickup Schedule</label>
-          <select value={form.pickupSchedule} onChange={e => set('pickupSchedule', e.target.value)}>
-            {SCHEDULES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-          </select>
-        </div>
+      <div className="form-group">
+        <label>Delivery Instructions (optional)</label>
+        <input value={form.deliveryInstructions} onChange={e => set('deliveryInstructions', e.target.value)} placeholder="e.g. Call on arrival, leave with security" maxLength={200} />
       </div>
       <div className="form-group">
-        <label>Home Address</label>
+        <label>Saved Address (default pickup)</label>
         <input value={form.address} onChange={e => set('address', e.target.value)} placeholder="Auto-filled when you pick location" />
       </div>
       <div className="form-group">
-        <label>Home Location on Map *</label>
+        <label>Address Location on Map *</label>
         <LocationPicker value={location} onChange={({ lat, lng, address }) => {
           setLocation({ lat, lng });
           if (address) set('address', address);
         }} />
       </div>
       <button type="submit" className="btn btn-primary btn-lg" disabled={loading}>
-        {loading ? 'Creating account…' : '🏠 Register as Resident'}
+        {loading ? 'Creating account…' : <><Ic icon={User} /> Register as Customer</>}
       </button>
     </form>
   );
 }
 
-// ── Driver Form ───────────────────────────────────────────────────────────────
+// ── Delivery Agent Form ───────────────────────────────────────────────────────────────
 function DriverForm({ onSubmit, loading, error }) {
   const [form, setForm] = useState({
     name: '', email: '', password: '', phone: '',
-    vehicleNo: '', licenseNo: '', assignedArea: '',
+    vehicleNo: '', vehicleType: 'van', licenseNo: '', assignedArea: '',
   });
   const [formError, setFormError] = useState('');
   const [touched,   setTouch]     = useState({});
@@ -182,7 +161,7 @@ function DriverForm({ onSubmit, loading, error }) {
       <div className="form-row">
         <div className="form-group">
           <label>Full Name</label>
-          <input required value={form.name} onChange={e => set('name', e.target.value)} placeholder="Driver Name" />
+          <input required value={form.name} onChange={e => set('name', e.target.value)} placeholder="Agent name" />
         </div>
         <div className="form-group">
           <label>Phone Number</label>
@@ -204,12 +183,18 @@ function DriverForm({ onSubmit, loading, error }) {
       <div className="form-row">
         <div className="form-group">
           <label>Email Address</label>
-          <input required type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="driver@example.com" />
+          <input required type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="agent@example.com" />
         </div>
         <div className="form-group">
           <label>Password</label>
-          <input required type="password" value={form.password} onChange={e => set('password', e.target.value)} placeholder="Min 6 characters" minLength={6} />
+          <PasswordInput required value={form.password} onChange={e => set('password', e.target.value)} placeholder="Min 6 characters" minLength={6} />
         </div>
+      </div>
+      <div className="form-group">
+        <label>Vehicle Type</label>
+        <select value={form.vehicleType} onChange={e => set('vehicleType', e.target.value)}>
+          {VEHICLE_TYPES.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+        </select>
       </div>
       <div className="form-row">
         <div className="form-group">
@@ -244,11 +229,11 @@ function DriverForm({ onSubmit, loading, error }) {
         </div>
       </div>
       <div className="form-group">
-        <label>Assigned Area / Zone</label>
+        <label>Delivery Zone / Area</label>
         <input required value={form.assignedArea} onChange={e => set('assignedArea', e.target.value)} placeholder="e.g. Zone A – Sector 12" />
       </div>
       <button type="submit" className="btn btn-secondary btn-lg" disabled={loading}>
-        {loading ? 'Creating account…' : '🚛 Register as Driver'}
+        {loading ? 'Creating account…' : <><Ic icon={Truck} /> Register as Delivery Agent</>}
       </button>
     </form>
   );
@@ -256,13 +241,13 @@ function DriverForm({ onSubmit, loading, error }) {
 
 // ── Admin Form ────────────────────────────────────────────────────────────────
 function AdminForm({ onSubmit, loading, error }) {
-  const [form, setForm] = useState({ name: '', email: '', password: '', organization: '' });
+  const [form, setForm] = useState({ name: '', email: '', password: '', organization: '', inviteCode: '' });
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
   return (
-    <form onSubmit={e => { e.preventDefault(); onSubmit(form, 'admin'); }}>
+    <form onSubmit={e => { e.preventDefault(); onSubmit({ ...form, inviteCode: form.inviteCode.trim() || undefined }, 'admin'); }}>
       {error && <div className="alert alert-error">{error}</div>}
       <div className="alert alert-info" style={{ marginBottom: 16 }}>
-        Admin accounts have full visibility into driver activity and collection logs.
+        Operations accounts can see every shipment, assign delivery agents and monitor the live fleet.
       </div>
       <div className="form-row">
         <div className="form-group">
@@ -271,7 +256,7 @@ function AdminForm({ onSubmit, loading, error }) {
         </div>
         <div className="form-group">
           <label>Organization</label>
-          <input value={form.organization} onChange={e => set('organization', e.target.value)} placeholder="e.g. City Municipality" />
+          <input value={form.organization} onChange={e => set('organization', e.target.value)} placeholder="e.g. Shipora Operations" />
         </div>
       </div>
       <div className="form-row">
@@ -281,22 +266,23 @@ function AdminForm({ onSubmit, loading, error }) {
         </div>
         <div className="form-group">
           <label>Password</label>
-          <input required type="password" value={form.password} onChange={e => set('password', e.target.value)} placeholder="Min 6 characters" minLength={6} />
+          <PasswordInput required value={form.password} onChange={e => set('password', e.target.value)} placeholder="Min 6 characters" minLength={6} />
         </div>
       </div>
+      <div className="form-group">
+        <label>Invite Code</label>
+        <input value={form.inviteCode} onChange={e => set('inviteCode', e.target.value)} placeholder="Required on production deployments" autoComplete="off" />
+        <span style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4, display: 'block' }}>Operations accounts are created by invitation. Ask your administrator for the code.</span>
+      </div>
       <button type="submit" className="btn btn-admin btn-lg" disabled={loading}>
-        {loading ? 'Creating account…' : '🏢 Register as Admin'}
+        {loading ? 'Creating account…' : <><Ic icon={Building2} /> Register for Operations</>}
       </button>
     </form>
   );
 }
 
 // ── Main Register Page ────────────────────────────────────────────────────────
-const TABS = [
-  { key: 'user',   label: '🏠 Resident' },
-  { key: 'driver', label: '🚛 Driver' },
-  { key: 'admin',  label: '🏢 Admin' },
-];
+const TABS = ['user', 'driver', 'admin'].map(key => ({ key, ...ROLE_LABELS[key] }));
 
 export default function Register() {
   const { register } = useAuth();
@@ -310,49 +296,31 @@ export default function Register() {
     setLoading(true);
     try {
       const user = await register(data, role);
-      if (user.role === 'driver') navigate('/driver');
-      else if (user.role === 'admin') navigate('/admin');
-      else navigate('/dashboard');
+      navigate(roleHome(user.role));
     } catch (err) {
-      setError(err.response?.data?.message || 'Registration failed. Please try again.');
+      setError(apiError(err, 'Registration failed. Please try again.'));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #1a3a1a 0%, #2d7a2d 100%)', padding: '80px 20px 40px' }}>
-      <div style={{ maxWidth: 700, margin: '0 auto' }}>
-        <div style={{ textAlign: 'center', marginBottom: 28 }}>
-          <div style={{ fontSize: 52, filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.3))' }}>♻️</div>
-          <h1 style={{ color: '#fff', fontSize: 26, fontWeight: 800, margin: '8px 0 4px', letterSpacing: '-0.5px' }}>
-            Create Account
-          </h1>
-          <p style={{ color: '#86efac', fontSize: 14 }}>Join EcoTrack Waste Disposal System</p>
-        </div>
-
-        <div className="card" style={{ padding: 32 }}>
-          <div className="tab-bar" style={{ marginBottom: 24 }}>
-            {TABS.map(t => (
-              <button key={t.key} type="button"
-                className={`tab-btn ${tab === t.key ? 'active' : ''}`}
-                onClick={() => { setTab(t.key); setError(''); }}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-
-          {tab === 'user'   && <UserForm   onSubmit={handleSubmit} loading={loading} error={error} />}
-          {tab === 'driver' && <DriverForm onSubmit={handleSubmit} loading={loading} error={error} />}
-          {tab === 'admin'  && <AdminForm  onSubmit={handleSubmit} loading={loading} error={error} />}
-
-          <p style={{ textAlign: 'center', marginTop: 20, fontSize: 14, color: '#6b8f6b' }}>
-            Already have an account?{' '}
-            <Link to="/login" style={{ color: '#2d7a2d', fontWeight: 700 }}>Sign in</Link>
-          </p>
-        </div>
+    <AuthShell wide title="Create your account" subtitle="Join Shipora — same-day delivery across Bengaluru."
+      footer={<>Already have an account? <Link to="/login">Sign in</Link></>}>
+      <div className="tab-bar" style={{ marginBottom: 22 }}>
+        {TABS.map(t => (
+          <button key={t.key} type="button"
+            className={`tab-btn ${tab === t.key ? 'active' : ''}`}
+            onClick={() => { setTab(t.key); setError(''); }}
+          >
+            <Ic icon={t.icon} /> {t.label}
+          </button>
+        ))}
       </div>
-    </div>
+
+      {tab === 'user'   && <UserForm   onSubmit={handleSubmit} loading={loading} error={error} />}
+      {tab === 'driver' && <DriverForm onSubmit={handleSubmit} loading={loading} error={error} />}
+      {tab === 'admin'  && <AdminForm  onSubmit={handleSubmit} loading={loading} error={error} />}
+    </AuthShell>
   );
 }

@@ -3,27 +3,25 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import LocationPicker from '../components/LocationPicker';
 import BackButton from '../components/BackButton';
+import { CUSTOMER_TYPES, ROLE_LABELS, VEHICLE_TYPES, apiError } from '../lib/shipora';
+import { Check, Eye, EyeOff, KeyRound, Lock, TriangleAlert } from 'lucide-react';
+import { Ic } from '../components/Icon';
 
 const PHONE_RE   = /^[6-9]\d{9}$/;
 const cleanPhone = v => v.replace(/\D/g, '').slice(0, 10);
 
-const WASTE_TYPES = [
-  { value: 'mixed',      label: '🗑️ Mixed Waste' },
-  { value: 'household',  label: '🏠 Household' },
-  { value: 'recyclable', label: '♻️ Recyclable' },
-  { value: 'organic',    label: '🌿 Organic' },
-];
-const SCHEDULES = [
-  { value: 'daily',     label: '📅 Daily' },
-  { value: 'alternate', label: '📆 Alternate Days' },
-  { value: 'weekly',    label: '🗓️ Weekly' },
+const AVAILABILITY = [
+  { value: 'available',   label: 'Available' },
+  { value: 'on_delivery', label: 'On delivery' },
+  { value: 'off_duty',    label: 'Off duty' },
 ];
 
-const ROLE_META = {
-  user:   { emoji: '🏠', label: 'Resident',  color: '#2d7a2d', bg: '#e8f5e8' },
-  driver: { emoji: '🚛', label: 'Driver',    color: '#d97706', bg: '#fffbeb' },
-  admin:  { emoji: '🏢', label: 'Admin',     color: '#7c3aed', bg: '#f3e8ff' },
+const ROLE_STYLE = {
+  user:   { color: '#0c831f', bg: '#dff5e3' },
+  driver: { color: '#c2410c', bg: '#ffedd5' },
+  admin:  { color: '#6d28d9', bg: '#ede9fe' },
 };
+const ROLE_META = Object.fromEntries(Object.keys(ROLE_LABELS).map(k => [k, { ...ROLE_LABELS[k], ...ROLE_STYLE[k] }]));
 
 // ── Locked field display ──────────────────────────────────────────────────────
 function LockedField({ label, value, reason }) {
@@ -36,7 +34,7 @@ function LockedField({ label, value, reason }) {
           padding: '1px 7px', borderRadius: 20, fontWeight: 600,
           textTransform: 'none', letterSpacing: 0, cursor: 'default',
         }}>
-          🔒 locked
+          <Ic icon={Lock} /> locked
         </span>
       </label>
       <div style={{
@@ -90,13 +88,12 @@ export default function Profile() {
         if (role === 'user') {
           setForm({
             name: data.name || '', phone: data.phone || '',
-            address: data.address || '', wasteType: data.wasteType || 'mixed',
-            pickupSchedule: data.pickupSchedule || 'daily',
-            residentType: data.residentType || 'house',
+            address: data.address || '', customerType: data.customerType || 'individual',
+            deliveryInstructions: data.deliveryInstructions || '',
           });
           if (data.location?.lat) setLocation(data.location);
         } else if (role === 'driver') {
-          setForm({ name: data.name || '', phone: data.phone || '', assignedArea: data.assignedArea || '' });
+          setForm({ name: data.name || '', phone: data.phone || '', assignedArea: data.assignedArea || '', vehicleType: data.vehicleType || 'van', availability: data.availability || 'available' });
         } else {
           setForm({ name: data.name || '', organization: data.organization || '' });
         }
@@ -121,7 +118,7 @@ export default function Profile() {
       await updateProfile(payload);
       setFlash({ type: 'success', msg: 'Profile updated successfully.' });
     } catch (err) {
-      setFlash({ type: 'error', msg: err.response?.data?.message || 'Update failed.' });
+      setFlash({ type: 'error', msg: apiError(err, 'Update failed.') });
     } finally {
       setSaving(false);
     }
@@ -150,7 +147,7 @@ export default function Profile() {
   if (loadingProfile) return (
     <div className="loading-screen">
       <div className="spinner" />
-      <p style={{ color: '#6b8f6b', fontWeight: 600 }}>Loading profile…</p>
+      <p style={{ color: '#64748b', fontWeight: 600 }}>Loading profile…</p>
     </div>
   );
 
@@ -171,7 +168,7 @@ export default function Profile() {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: 34, flexShrink: 0,
           }}>
-            {meta.emoji}
+            <Ic icon={meta.icon} size={28} />
           </div>
           <div style={{ flex: 1 }}>
             <h2 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text)', marginBottom: 4 }}>
@@ -179,7 +176,7 @@ export default function Profile() {
             </h2>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <span className="badge" style={{ background: meta.bg, color: meta.color, fontSize: 12 }}>
-                {meta.emoji} {meta.label}
+                <Ic icon={meta.icon} size={13} /> {meta.label}
               </span>
               <span style={{ fontSize: 13, color: 'var(--muted)' }}>{user?.email}</span>
               {user?.role === 'admin' && user?.organization && (
@@ -203,7 +200,7 @@ export default function Profile() {
 
         <form onSubmit={handleSave}>
 
-          {/* ── Resident fields ── */}
+          {/* ── Customer fields ── */}
           {role === 'user' && (
             <>
               <div className="form-row">
@@ -222,60 +219,47 @@ export default function Profile() {
                   />
                   {form.phone && !PHONE_RE.test(form.phone) && (
                     <span style={{ fontSize: 11, color: 'var(--red)', marginTop: 4, display: 'block' }}>
-                      ⚠ Must be 10 digits starting with 6–9
+                      <Ic icon={TriangleAlert} /> Must be 10 digits starting with 6–9
                     </span>
                   )}
                 </div>
               </div>
               <LockedField label="Email Address" value={profile?.email} reason="Email is your login ID and cannot be changed." />
               <div className="form-group">
-                <label>Home Address</label>
+                <label>Saved Address (default pickup)</label>
                 <input value={form.address} onChange={e => set('address', e.target.value)} placeholder="Your address" />
               </div>
 
-              <div className="profile-section-label">Collection Preferences</div>
+              <div className="profile-section-label">Shipping Preferences</div>
               <div className="form-group">
-                <label>Residence Type</label>
-                <div style={{ display: 'flex', gap: 12, marginTop: 4 }}>
-                  {[
-                    { value: 'house', label: '🏠 Independent House' },
-                    { value: 'flat',  label: '🏢 Flat / Apartment' },
-                  ].map(r => (
+                <label>Account Type</label>
+                <div style={{ display: 'flex', gap: 12, marginTop: 4, flexWrap: 'wrap' }}>
+                  {CUSTOMER_TYPES.map(r => (
                     <label key={r.value} style={{
-                      flex: 1, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                      flex: '1 1 160px', display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
                       padding: '10px 14px', borderRadius: 8,
-                      border: `1.5px solid ${form.residentType === r.value ? 'var(--green-600)' : 'var(--border)'}`,
-                      background: form.residentType === r.value ? 'var(--green-50)' : '#fff',
+                      border: `1.5px solid ${form.customerType === r.value ? 'var(--brand-600)' : 'var(--border)'}`,
+                      background: form.customerType === r.value ? 'var(--brand-50)' : '#fff',
                       transition: 'all 0.15s',
                     }}>
                       <input
-                        type="radio" name="residentType" value={r.value}
-                        checked={form.residentType === r.value}
-                        onChange={() => set('residentType', r.value)}
-                        style={{ accentColor: 'var(--green-600)' }}
+                        type="radio" name="customerType" value={r.value}
+                        checked={form.customerType === r.value}
+                        onChange={() => set('customerType', r.value)}
+                        style={{ accentColor: 'var(--brand-600)' }}
                       />
-                      <span style={{ fontSize: 14, fontWeight: 600 }}>{r.label}</span>
+                      <span style={{ fontSize: 14, fontWeight: 600 }}><Ic icon={r.icon} /> {r.label}</span>
                     </label>
                   ))}
                 </div>
               </div>
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Waste Type</label>
-                  <select value={form.wasteType} onChange={e => set('wasteType', e.target.value)}>
-                    {WASTE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Pickup Schedule</label>
-                  <select value={form.pickupSchedule} onChange={e => set('pickupSchedule', e.target.value)}>
-                    {SCHEDULES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-                  </select>
-                </div>
+              <div className="form-group">
+                <label>Delivery Instructions</label>
+                <input value={form.deliveryInstructions} onChange={e => set('deliveryInstructions', e.target.value)} placeholder="e.g. Call on arrival, leave with security" maxLength={200} />
               </div>
 
               <div className="form-group">
-                <label>Home Location on Map</label>
+                <label>Address Location on Map</label>
                 <LocationPicker value={location} onChange={({ lat, lng, address }) => {
                   setLocation({ lat, lng });
                   if (address && !form.address) set('address', address);
@@ -284,7 +268,7 @@ export default function Profile() {
             </>
           )}
 
-          {/* ── Driver fields ── */}
+          {/* ── Delivery agent fields ── */}
           {role === 'driver' && (
             <>
               <div className="form-row">
@@ -303,7 +287,7 @@ export default function Profile() {
                   />
                   {form.phone && !PHONE_RE.test(form.phone) && (
                     <span style={{ fontSize: 11, color: 'var(--red)', marginTop: 4, display: 'block' }}>
-                      ⚠ Must be 10 digits starting with 6–9
+                      <Ic icon={TriangleAlert} /> Must be 10 digits starting with 6–9
                     </span>
                   )}
                 </div>
@@ -314,10 +298,26 @@ export default function Profile() {
                 <LockedField label="Driving Licence No." value={profile?.licenseNo} reason="Official document — contact admin to correct." />
               </div>
 
+              <div className="profile-section-label">Vehicle &amp; Availability</div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Vehicle Type</label>
+                  <select value={form.vehicleType} onChange={e => set('vehicleType', e.target.value)}>
+                    {VEHICLE_TYPES.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Availability</label>
+                  <select value={form.availability} onChange={e => set('availability', e.target.value)}>
+                    {AVAILABILITY.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+                  </select>
+                </div>
+              </div>
+
               <div className="profile-section-label">Today's Assignment</div>
               <div className="form-group">
                 <label>
-                  Assigned Zone / Area
+                  Delivery Zone / Area
                   <span style={{ marginLeft: 8, fontSize: 11, background: '#fef9c3', color: '#854d0e',
                     padding: '2px 8px', borderRadius: 20, fontWeight: 600 }}>
                     Update daily
@@ -329,7 +329,7 @@ export default function Profile() {
                   placeholder="e.g. Zone B – Sector 14"
                 />
                 <span style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4, display: 'block' }}>
-                  Set the area you are covering today so residents can see your assignment.
+                  Set the area you are covering today so customers and operations can see your assignment.
                 </span>
               </div>
             </>
@@ -345,7 +345,7 @@ export default function Profile() {
                 </div>
                 <div className="form-group">
                   <label>Organization</label>
-                  <input value={form.organization} onChange={e => set('organization', e.target.value)} placeholder="e.g. City Municipality" />
+                  <input value={form.organization} onChange={e => set('organization', e.target.value)} placeholder="e.g. Shipora Operations" />
                 </div>
               </div>
               <LockedField label="Email Address" value={profile?.email} reason="Email is your login ID and cannot be changed." />
@@ -354,7 +354,7 @@ export default function Profile() {
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
             <button type="submit" className="btn btn-primary" disabled={saving} style={{ minWidth: 140 }}>
-              {saving ? 'Saving…' : '✓ Save Changes'}
+              {saving ? 'Saving…' : <><Ic icon={Check} /> Save Changes</>}
             </button>
           </div>
         </form>
@@ -386,7 +386,7 @@ export default function Profile() {
                 position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)',
                 background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: 'var(--muted)',
               }}>
-                {showPw ? '🙈' : '👁'}
+                {showPw ? <Ic icon={EyeOff} /> : <Ic icon={Eye} />}
               </button>
             </div>
           </div>
@@ -410,13 +410,13 @@ export default function Profile() {
                 style={pwForm.confirm && pwForm.confirm !== pwForm.next ? { borderColor: 'var(--red)' } : {}}
               />
               {pwForm.confirm && pwForm.confirm !== pwForm.next && (
-                <span style={{ fontSize: 11, color: 'var(--red)', marginTop: 4, display: 'block' }}>⚠ Passwords do not match</span>
+                <span style={{ fontSize: 11, color: 'var(--red)', marginTop: 4, display: 'block' }}><Ic icon={TriangleAlert} /> Passwords do not match</span>
               )}
             </div>
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <button type="submit" className="btn btn-ghost" disabled={pwSaving} style={{ minWidth: 160 }}>
-              {pwSaving ? 'Updating…' : '🔑 Change Password'}
+              {pwSaving ? 'Updating…' : <><Ic icon={KeyRound} /> Change Password</>}
             </button>
           </div>
         </form>

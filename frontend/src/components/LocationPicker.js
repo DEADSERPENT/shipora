@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { MapContainer, TileLayer, Marker, useMapEvents, useMap } from 'react-leaflet';
+import { Hourglass, Mail, MapPin, Radio, Search, TriangleAlert } from 'lucide-react';
+import { Ic } from './Icon';
+import { BENGALURU, inBengaluru, OUTSIDE_BENGALURU_MSG } from '../lib/shipora';
 
 // ── Nominatim helpers ─────────────────────────────────────────────────────────
-const NOM_HEADERS = { 'Accept-Language': 'en', 'User-Agent': 'EcoTrack/1.0' };
+const NOM_HEADERS = { 'Accept-Language': 'en', 'User-Agent': 'Shipora/1.0' };
 
 async function reverseGeocode(lat, lng) {
   try {
@@ -22,7 +25,7 @@ async function reverseGeocode(lat, lng) {
 
 async function forwardSearch(query) {
   const r = await fetch(
-    `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=6&addressdetails=1&countrycodes=in`,
+    `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=6&addressdetails=1&countrycodes=in&viewbox=${BENGALURU.viewbox}&bounded=1`,
     { headers: NOM_HEADERS }
   );
   return r.json();
@@ -30,7 +33,7 @@ async function forwardSearch(query) {
 
 async function pincodeSearch(pin) {
   const r = await fetch(
-    `https://nominatim.openstreetmap.org/search?postalcode=${pin}&country=in&format=json&limit=6&addressdetails=1`,
+    `https://nominatim.openstreetmap.org/search?postalcode=${pin}&country=in&format=json&limit=6&addressdetails=1&viewbox=${BENGALURU.viewbox}&bounded=1`,
     { headers: NOM_HEADERS }
   );
   return r.json();
@@ -60,7 +63,7 @@ function FlyTo({ target }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function LocationPicker({ value, onChange }) {
-  const [center,       setCenter]      = useState([20.5937, 78.9629]);
+  const [center,       setCenter]      = useState(value?.lat ? [value.lat, value.lng] : BENGALURU.center);
   const [flyTarget,    setFlyTarget]   = useState(null);
   const [loading,      setLoading]     = useState(false);
 
@@ -70,6 +73,7 @@ export default function LocationPicker({ value, onChange }) {
   const [searching,    setSearching]   = useState(false);
   const [searchError,  setSearchError] = useState('');
   const searchRef                      = useRef(null);
+  const skipLiveSearch                 = useRef(false);  // set when the box is filled by picking a result, so that pick does not re-search
 
   // Pincode
   const [pincode,      setPincode]     = useState('');
@@ -100,6 +104,7 @@ export default function LocationPicker({ value, onChange }) {
   }, []); // eslint-disable-line
 
   const handlePick = useCallback(async (lat, lng) => {
+    if (!inBengaluru(lat, lng)) { setSearchError(OUTSIDE_BENGALURU_MSG); return; }  // maps are locked to Bengaluru; this catches GPS fixes elsewhere
     setLoading(true);
     const { address, pincode: pin } = await reverseGeocode(lat, lng);
     onChange({ lat, lng, address });
@@ -118,6 +123,28 @@ export default function LocationPicker({ value, onChange }) {
   };
 
   // ── Address search ──────────────────────────────────────────────────────────
+  // Suggestions while typing: wait for a short pause (600 ms) and 3+ characters so we stay well inside Nominatim's 1 req/s limit.
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (skipLiveSearch.current) { skipLiveSearch.current = false; return undefined; }
+    if (q.length < 3) { setResults([]); return undefined; }
+    let live = true;
+    const timer = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const data = await forwardSearch(q);
+        if (!live) return;
+        setResults(data);
+        setSearchError(data.length ? '' : 'No results found in Bengaluru. Try a different search.');
+      } catch {
+        if (live) setSearchError('Search failed. Check your connection.');
+      } finally {
+        if (live) setSearching(false);
+      }
+    }, 600);
+    return () => { live = false; clearTimeout(timer); };
+  }, [searchQuery]);
+
   const handleSearch = async (e) => {
     e?.preventDefault();
     if (!searchQuery.trim()) return;
@@ -126,7 +153,7 @@ export default function LocationPicker({ value, onChange }) {
     setResults([]);
     try {
       const data = await forwardSearch(searchQuery);
-      if (!data.length) setSearchError('No results found. Try a different search.');
+      if (!data.length) setSearchError('No results found in Bengaluru. Try a different search.');
       else setResults(data);
     } catch {
       setSearchError('Search failed. Check your connection.');
@@ -138,6 +165,7 @@ export default function LocationPicker({ value, onChange }) {
   const pickSearchResult = (r) => {
     const lat = parseFloat(r.lat), lng = parseFloat(r.lon);
     handlePick(lat, lng);
+    skipLiveSearch.current = true;
     setSearchQuery(shortName(r));
     setResults([]);
     setPinResults([]);
@@ -173,22 +201,22 @@ export default function LocationPicker({ value, onChange }) {
 
       {/* ── Address Search ── */}
       <div style={{ marginBottom: 8 }}>
-        <form onSubmit={handleSearch} style={{ display: 'flex', gap: 6 }}>
+        <div role="search" style={{ display: 'flex', gap: 6 }}>
           <div style={{ flex: 1, position: 'relative' }}>
-            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 15, pointerEvents: 'none' }}>🔍</span>
+            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 15, pointerEvents: 'none' }}><Ic icon={Search} /></span>
             <input
               type="text"
               value={searchQuery}
               onChange={e => { setSearchQuery(e.target.value); setSearchError(''); }}
-              onKeyDown={e => e.key === 'Enter' && handleSearch()}
-              placeholder="Search area, landmark, street…"
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleSearch(); } }}
+              placeholder="Search area, landmark, street in Bengaluru…"
               style={{ width: '100%', paddingLeft: 32, paddingRight: 12, height: 38, border: '1.5px solid var(--border)', borderRadius: 8, fontSize: 13, outline: 'none' }}
             />
           </div>
-          <button type="submit" className="btn btn-primary btn-sm" disabled={searching} style={{ whiteSpace: 'nowrap', height: 38 }}>
+          <button type="button" onClick={handleSearch} className="btn btn-primary btn-sm" disabled={searching} style={{ whiteSpace: 'nowrap', height: 38 }}>
             {searching ? '…' : 'Search'}
           </button>
-        </form>
+        </div>
 
         {/* Search results dropdown */}
         {(searchResults.length > 0 || searchError) && (
@@ -207,10 +235,10 @@ export default function LocationPicker({ value, onChange }) {
                   cursor: 'pointer', borderBottom: i < searchResults.length - 1 ? '1px solid var(--border)' : 'none',
                   transition: 'background 0.15s',
                 }}
-                onMouseEnter={e => e.currentTarget.style.background = 'var(--green-50)'}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--brand-50)'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
               >
-                <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>📍 {shortName(r)}</div>
+                <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)' }}><Ic icon={MapPin} /> {shortName(r)}</div>
                 <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2, lineHeight: 1.4 }}>
                   {r.display_name}
                 </div>
@@ -222,16 +250,16 @@ export default function LocationPicker({ value, onChange }) {
 
       {/* ── Pincode Search ── */}
       <div style={{ marginBottom: 10 }}>
-        <form onSubmit={handlePincodeSearch} style={{ display: 'flex', gap: 6 }}>
+        <div role="search" style={{ display: 'flex', gap: 6 }}>
           <div style={{ flex: 1, position: 'relative' }}>
-            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 14, pointerEvents: 'none' }}>📮</span>
+            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 14, pointerEvents: 'none' }}><Ic icon={Mail} /></span>
             <input
               type="text"
               inputMode="numeric"
               maxLength={6}
               value={pincode}
               onChange={e => { setPincode(e.target.value.replace(/\D/g, '').slice(0, 6)); setPinError(''); }}
-              onKeyDown={e => e.key === 'Enter' && handlePincodeSearch()}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handlePincodeSearch(); } }}
               placeholder="Enter 6-digit pincode"
               style={{
                 width: '100%', paddingLeft: 32, paddingRight: 12, height: 38,
@@ -240,13 +268,13 @@ export default function LocationPicker({ value, onChange }) {
               }}
             />
           </div>
-          <button type="submit" className="btn btn-ghost btn-sm" disabled={pinSearching} style={{ whiteSpace: 'nowrap', height: 38 }}>
+          <button type="button" onClick={handlePincodeSearch} className="btn btn-ghost btn-sm" disabled={pinSearching} style={{ whiteSpace: 'nowrap', height: 38 }}>
             {pinSearching ? '…' : 'Find'}
           </button>
-        </form>
+        </div>
 
         {pinError && (
-          <span style={{ fontSize: 11, color: 'var(--red)', marginTop: 4, display: 'block' }}>⚠ {pinError}</span>
+          <span style={{ fontSize: 11, color: 'var(--red)', marginTop: 4, display: 'block' }}><Ic icon={TriangleAlert} /> {pinError}</span>
         )}
 
         {/* Pincode results dropdown */}
@@ -266,10 +294,10 @@ export default function LocationPicker({ value, onChange }) {
                   cursor: 'pointer', borderBottom: i < pinResults.length - 1 ? '1px solid var(--border)' : 'none',
                   transition: 'background 0.15s',
                 }}
-                onMouseEnter={e => e.currentTarget.style.background = 'var(--green-50)'}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--brand-50)'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
               >
-                <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>📍 {shortName(r)}</div>
+                <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)' }}><Ic icon={MapPin} /> {shortName(r)}</div>
                 <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>{r.display_name}</div>
               </button>
             ))}
@@ -281,6 +309,9 @@ export default function LocationPicker({ value, onChange }) {
       <MapContainer
         center={center}
         zoom={13}
+        minZoom={11}
+        maxBounds={BENGALURU.bounds}
+        maxBoundsViscosity={1.0}
         style={{ height: 260, width: '100%', borderRadius: 10, border: '1.5px solid var(--border)' }}
       >
         <TileLayer
@@ -295,12 +326,12 @@ export default function LocationPicker({ value, onChange }) {
       {/* ── Status bar ── */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
         <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-          {loading ? '⏳ Getting address…' : value?.lat
-            ? `📍 ${value.lat.toFixed(4)}, ${value.lng.toFixed(4)}`
+          {loading ? <><Ic icon={Hourglass} size={13} /> Getting address…</> : value?.lat
+            ? <><Ic icon={MapPin} size={13} /> {value.lat.toFixed(4)}, {value.lng.toFixed(4)}</>
             : 'Click the map, search, or enter a pincode'}
         </span>
         <button type="button" className="btn btn-ghost btn-sm" onClick={useGPS}>
-          📡 GPS
+          <Ic icon={Radio} /> GPS
         </button>
       </div>
     </div>

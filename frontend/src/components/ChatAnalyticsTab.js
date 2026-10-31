@@ -3,7 +3,9 @@ import axios from 'axios';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell, LabelList, ResponsiveContainer,
 } from 'recharts';
-import { StatCard } from '../pages/AdminDashboard';
+import { Bot, MessageCircle, Mic, Zap } from 'lucide-react';
+import { StatCard } from './ShipmentUI';
+import { Ic } from './Icon';
 
 // Fixed categorical order, validated with the dataviz skill's palette
 // validator (5-slot set, worst adjacent CVD ∆E 12.9 — clears the ≥12
@@ -12,17 +14,17 @@ import { StatCard } from '../pages/AdminDashboard';
 // "how the user felt."
 const AGENT_META = {
   tracking:   { label: 'Tracking',   color: '#2a78d6' },
-  complaints: { label: 'Complaints', color: '#eda100' },
-  schedule:   { label: 'Schedule',   color: '#e87ba4' },
+  complaints: { label: 'Delivery Issues', color: '#eda100' },
+  schedule:   { label: 'Shipments',   color: '#e87ba4' },
   support:    { label: 'Support',    color: '#1baf7a' },
   general:    { label: 'General',    color: '#4a3aa7' },
 };
 const SENTIMENT_META = {
-  positive: { label: '🙂 Positive', color: '#0ca30c' },
-  neutral:  { label: '😐 Neutral',  color: '#898781' },
-  negative: { label: '🙁 Negative', color: '#d03b3b' },
+  positive: { label: 'Positive', color: '#0ca30c' },
+  neutral:  { label: 'Neutral',  color: '#898781' },
+  negative: { label: 'Negative', color: '#d03b3b' },
 };
-const CHANNEL_ICON = { text: '💬', voice: '🎙️' };
+const CHANNEL_ICON = { text: <Ic icon={MessageCircle} size={15} />, voice: <Ic icon={Mic} size={15} /> };
 
 function fmtMs(ms) {
   return ms == null ? '—' : `${ms} ms`;
@@ -68,7 +70,7 @@ export default function ChatAnalyticsTab({ API }) {
   if (error || !data) {
     return (
       <div className="card" style={{ textAlign: 'center', padding: '48px 20px', color: 'var(--muted)' }}>
-        <div style={{ fontSize: 44 }}>🎙️</div>
+        <div style={{ display: 'flex', justifyContent: 'center', color: 'var(--brand-500)' }}><Ic icon={Mic} size={44} strokeWidth={1.5} /></div>
         <p style={{ marginTop: 10, fontWeight: 600 }}>Couldn't load chat analytics</p>
       </div>
     );
@@ -98,10 +100,10 @@ export default function ChatAnalyticsTab({ API }) {
 
       {/* KPI row */}
       <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', marginBottom: 24 }}>
-        <StatCard icon="💬" value={data.totalConversations} label="Total Conversations" color="green" />
-        <StatCard icon="🤖" value={`${aiRate}%`}             label="AI Reply Rate"       color="blue" />
-        <StatCard icon="⚡" value={fmtMs(data.avgLatencyMs.total)} label="Avg Total Latency" color="amber" />
-        <StatCard icon="🎙️" value={fmtMs(data.avgLatencyMs.stt ?? data.avgLatencyMs.tts)} label="Avg STT/TTS Latency" color="purple" />
+        <StatCard icon={MessageCircle} value={data.totalConversations} label="Total Conversations" color="green" />
+        <StatCard icon={Bot} value={`${aiRate}%`}             label="AI Reply Rate"       color="blue" />
+        <StatCard icon={Zap} value={fmtMs(data.avgLatencyMs.total)} label="Avg Total Latency" color="orange" />
+        <StatCard icon={Mic} value={fmtMs(data.avgLatencyMs.stt ?? data.avgLatencyMs.tts)} label="Avg STT/TTS Latency" color="purple" />
       </div>
 
       {/* Charts */}

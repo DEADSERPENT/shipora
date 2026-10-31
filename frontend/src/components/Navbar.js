@@ -1,111 +1,134 @@
-import React from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import PublicNav from './PublicNav';
 import { useAuth } from '../context/AuthContext';
+import { ROLE_LABELS } from '../lib/shipora';
+import { ChevronDown, Headset, History, LayoutDashboard, MapPin, Package, Route, Search, User, Zap } from 'lucide-react';
+import { Ic } from './Icon';
 
-const ROLE_META = {
-  user:   { label: '🏠 Resident', color: '#4db84d' },
-  driver: { label: '🚛 Driver',   color: '#f59e0b' },
-  admin:  { label: '🏢 Admin',    color: '#7c3aed' },
-};
-
-export default function Navbar() {
+// Quick-commerce style bar (Blinkit / Zepto): logo, "delivery in …" locator, a wide search bar (here: track by
+// tracking number) and the account actions. Styles live in index.css under .nav-*.
+function AppNav() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const [query, setQuery] = useState('');
+  const [cityOpen, setCityOpen] = useState(false);
+  const cityRef = useRef(null);
+
+  useEffect(() => {
+    const close = (e) => { if (cityRef.current && !cityRef.current.contains(e.target)) setCityOpen(false); };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, []);
 
   const handleLogout = () => { logout(); navigate('/login'); };
-  const meta = user ? (ROLE_META[user.role] || ROLE_META.user) : null;
+  const meta = user ? (ROLE_LABELS[user.role] || ROLE_LABELS.user) : null;
+  const isCustomer = user?.role === 'user';
+  const isAdmin = user?.role === 'admin';
+
+  const onSearch = (e) => {
+    e.preventDefault();
+    const tn = query.trim().toUpperCase();
+    navigate(tn ? `/track/${encodeURIComponent(tn)}` : '/track');
+    setQuery('');
+  };
 
   return (
-    <nav style={{
-      position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1000,
-      background: 'linear-gradient(90deg, #1a3a1a 0%, #2d7a2d 100%)',
-      boxShadow: '0 2px 16px rgba(0,0,0,0.25)',
-      height: 64, display: 'flex', alignItems: 'center',
-    }}>
-      <div style={{
-        maxWidth: 1280, margin: '0 auto', padding: '0 20px',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        width: '100%',
-      }}>
-        {/* Logo */}
-        <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none' }}>
-          <span style={{ fontSize: 28, filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))' }}>♻️</span>
-          <div>
-            <div style={{ color: '#fff', fontWeight: 800, fontSize: 20, letterSpacing: '-0.5px' }}>EcoTrack</div>
-            <div style={{ color: '#86efac', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-              Waste Disposal System
-            </div>
-          </div>
+    <nav className="nav">
+      <div className="nav-inner">
+        <Link to="/" aria-label="Shipora home" className="nav-logo">
+          <span className="nav-logo-mark"><Ic icon={Zap} size={20} strokeWidth={2.6} /></span>
+          <span className="nav-logo-word">shipora</span>
         </Link>
 
-        {/* Right */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+        {isCustomer && (
+          <>
+        <div className="nav-locator" ref={cityRef}>
+          <div className="nav-locator-top"><Ic icon={Zap} size={13} strokeWidth={2.6} /> Same-day delivery</div>
+          <button type="button" className="nav-locator-city" onClick={() => setCityOpen(o => !o)} aria-expanded={cityOpen}>
+            Bengaluru, Karnataka <Ic icon={ChevronDown} size={14} />
+          </button>
+          {cityOpen && (
+            <div className="nav-pop" role="dialog" aria-label="Delivery area">
+              <div className="nav-pop-title"><Ic icon={MapPin} size={15} /> Delivering in Bengaluru</div>
+              <p>Pickup and drop must both be inside Bengaluru. More cities coming soon.</p>
+            </div>
+          )}
+        </div>
+
+        <form className="nav-search" onSubmit={onSearch} role="search">
+          <Ic icon={Search} size={18} />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder='Track a parcel — try "SHP48217390"'
+            aria-label="Tracking number"
+            autoComplete="off"
+          />
+          <button type="submit" className="nav-search-go">Track</button>
+        </form>
+          </>
+        )}
+        {!isCustomer && (
+          <>
+            <div className="nav-role" style={{ '--role': meta?.color }}>
+              <span className="nav-role-ico"><Ic icon={meta?.icon} size={15} /></span>
+              <div>
+                <div className="nav-role-title">{isAdmin ? 'Operations console' : 'Delivery agent'}</div>
+                <div className="nav-role-sub">{isAdmin ? (user.organization || 'Bengaluru network') : 'Bengaluru same-day'}</div>
+              </div>
+            </div>
+            <div className="nav-spacer" />
+          </>
+        )}
+
+        <div className="nav-actions">
           {user ? (
             <>
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>{user.name}</div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: meta?.color, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                  {meta?.label}
-                  {user.role === 'admin' && user.organization && (
-                    <span style={{ color: '#86efac', marginLeft: 4 }}>· {user.organization}</span>
-                  )}
+              {isCustomer && (
+                <>
+                  <Link to="/shipments/new" className="nav-btn nav-btn-primary"><Ic icon={Package} /> Send parcel</Link>
+                  <Link to="/support" className="nav-btn"><Ic icon={Headset} /> <span className="nav-hide-sm">Support</span></Link>
+                </>
+              )}
+              {user.role === 'driver' && (
+                <>
+                  <Link to="/driver" className="nav-btn nav-btn-primary"><Ic icon={Route} /> My route</Link>
+                  <Link to="/agent/history" className="nav-btn"><Ic icon={History} /> <span className="nav-hide-sm">History</span></Link>
+                </>
+              )}
+              {isAdmin && (
+                <Link to="/admin" className="nav-btn nav-btn-primary"><Ic icon={LayoutDashboard} /> Dashboard</Link>
+              )}
+              <Link to="/profile" className="nav-btn"><Ic icon={User} /> <span className="nav-hide-sm">Profile</span></Link>
+              <div className="nav-user">
+                <div className="nav-user-name">{user.name}</div>
+                <div className="nav-user-role" style={{ color: meta?.color }}>
+                  <Ic icon={meta?.icon} size={12} /> {meta?.label}
+                  {user.role === 'admin' && user.organization && <span style={{ color: 'var(--muted)', marginLeft: 4 }}>· {user.organization}</span>}
                 </div>
               </div>
-              <Link to="/support" style={{
-                background: 'rgba(255,255,255,0.12)', color: '#86efac',
-                textDecoration: 'none', padding: '7px 14px', borderRadius: 8,
-                fontSize: 13, fontWeight: 600, border: '1px solid rgba(134,239,172,0.3)',
-                transition: 'background 0.2s',
-              }}
-                onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.22)'}
-                onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.12)'}
-              >
-                🎧 Support
-              </Link>
-              <Link to="/profile" style={{
-                background: 'rgba(255,255,255,0.12)', color: '#fff',
-                textDecoration: 'none', padding: '7px 14px', borderRadius: 8,
-                fontSize: 13, fontWeight: 600, border: '1px solid rgba(255,255,255,0.2)',
-                transition: 'background 0.2s',
-              }}
-                onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.22)'}
-                onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.12)'}
-              >
-                👤 Profile
-              </Link>
-              <button
-                onClick={handleLogout}
-                style={{
-                  background: 'rgba(239,68,68,0.85)', color: '#fff',
-                  border: 'none', padding: '7px 16px', borderRadius: 8,
-                  fontSize: 13, fontWeight: 600, cursor: 'pointer',
-                  transition: 'background 0.2s',
-                }}
-                onMouseEnter={e => e.target.style.background = 'rgba(220,38,38,0.95)'}
-                onMouseLeave={e => e.target.style.background = 'rgba(239,68,68,0.85)'}
-              >
-                Sign Out
-              </button>
+              <button onClick={handleLogout} className="nav-btn nav-btn-dark">Sign Out</button>
             </>
           ) : (
             <>
-              <Link to="/login" style={{
-                background: '#4db84d', color: '#fff', textDecoration: 'none',
-                padding: '8px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600,
-              }}>
-                Login
-              </Link>
-              <Link to="/register" style={{
-                background: 'transparent', color: '#4db84d', textDecoration: 'none',
-                padding: '7px 17px', borderRadius: 8, fontSize: 13, fontWeight: 600,
-                border: '1.5px solid #4db84d',
-              }}>
-                Register
-              </Link>
+              <Link to="/login" className="nav-btn nav-btn-primary">Login</Link>
+              <Link to="/register" className="nav-btn nav-btn-outline">Register</Link>
             </>
           )}
         </div>
       </div>
     </nav>
   );
+}
+
+// Signed-out visitors get the marketing nav; the auth screens carry their own logo (split-screen layout), so no bar there.
+const AUTH_PATHS = ['/login', '/register', '/forgot-password'];
+
+export default function Navbar() {
+  const { user } = useAuth();
+  const { pathname } = useLocation();
+  if (user) return <AppNav />;
+  if (AUTH_PATHS.includes(pathname)) return null;
+  return <PublicNav />;
 }

@@ -35,3 +35,13 @@ Thumbs.db
 # MongoDB memory server cache
 **/mongodb-binaries/
 **/.cache/
+
+# Local voice models (large, downloaded per docs/LOCAL_VOICE.md)
+backend-fastapi/local_models/
+
+# Env variants / test caches
+.env.*
+!.env.example
+**/.pytest_cache/
+.coverage
+htmlcov/

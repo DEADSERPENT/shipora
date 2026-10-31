@@ -6,10 +6,10 @@ from beanie import Document, Insert, Replace, Save, before_event
 
 class SupportConfig(Document):
     singleton: str = "config"
-    phone: str = "1800-ECO-TRACK"
-    email: str = "support@ecotrack.in"
+    phone: str = "1800-SHIPORA"
+    email: str = "support@shipora.in"
     whatsapp: str = "+91 98765 43210"
-    officeAddress: str = "City Municipal Office, Ground Floor, Civic Center"
+    officeAddress: str = "Shipora Customer Care, Operations Hub"
     officeHours: str = "Mon – Fri · 9 AM – 5 PM"
     createdAt: Optional[datetime] = None
     updatedAt: Optional[datetime] = None
