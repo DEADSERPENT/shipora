@@ -34,12 +34,14 @@ MAX_PARCEL_KG = float(os.getenv("MAX_PARCEL_KG", "20"))  # a two-wheeler's carry
 ETA_BASE_MINUTES = float(os.getenv("ETA_BASE_MINUTES", "30"))  # rider assignment + pickup
 ETA_MINUTES_PER_KM = float(os.getenv("ETA_MINUTES_PER_KM", "4"))
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # STT/TTS only (see services/stt.py/tts.py) — not used for any LLM/chat path
+# Optional, opt-in hosted speech (STT_PROVIDER=openai / TTS_PROVIDER=openai). Never read unless one of those is selected explicitly:
+# the app starts, and voice works, without it. There is no automatic fallback to a hosted provider.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# STT/TTS reuse OPENAI_API_KEY above — no separate key needed.
-STT_PROVIDER = os.getenv("STT_PROVIDER", "openai")
-TTS_PROVIDER = os.getenv("TTS_PROVIDER", "openai")
-TTS_VOICE = os.getenv("TTS_VOICE", "nova")  # nova/shimmer read as female; alloy/echo/onyx/fable read male or neutral
+# Speech providers. Local by default (English only): STT = faster-whisper, TTS = Kokoro. Hosted providers must be asked for by name.
+STT_PROVIDER = os.getenv("STT_PROVIDER", "faster_whisper").strip().lower()   # faster_whisper | onnx_local | openai (opt-in, paid)
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "kokoro").strip().lower()           # kokoro | piper | openai (opt-in, paid)
+TTS_VOICE = os.getenv("TTS_VOICE", "nova")  # OpenAI TTS voice only (TTS_PROVIDER=openai); Kokoro uses KOKORO_VOICE
 # The only LLM: a local Ollama model (classification, tool-calling, plain-text fallback). Runs on the GPU, nothing leaves the machine. Needs a model with tool support.
 CLASSIFIER_MODE = os.getenv("CLASSIFIER_MODE", "llm").strip().lower()   # llm | hybrid (keyword fast-path when decisive, else LLM)
 VOICE_WARMUP = os.getenv("VOICE_WARMUP", "true").strip().lower() not in ("0", "false", "no", "off")   # load STT/TTS/LLM at startup
@@ -56,14 +58,28 @@ OLLAMA_VOICE_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_VOICE_TIMEOUT_SECONDS", "
 OLLAMA_COOLDOWN_SECONDS = float(os.getenv("OLLAMA_COOLDOWN_SECONDS", "30"))  # after an outage-type failure (down, timeout, 5xx) skip Ollama for this long and use the fallbacks
 VOICE_MAX_UPLOAD_BYTES = int(os.getenv("VOICE_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
 
-# Local, open-source voice providers (STT_PROVIDER=faster_whisper / TTS_PROVIDER=piper). Optional:
-# nothing here is read unless one of those providers is selected. Model files are NOT in the repo —
+# Local, open-source voice providers (the defaults: STT_PROVIDER=faster_whisper, TTS_PROVIDER=kokoro; piper / onnx_local are alternatives).
+# Nothing here is read unless one of those providers is selected. Model files are NOT in the repo —
 # see docs/LOCAL_VOICE.md. Relative paths resolve against backend-fastapi/.
 LOCAL_MODELS_DIR = os.getenv("LOCAL_MODELS_DIR", "local_models")
-FASTER_WHISPER_MODEL = os.getenv("FASTER_WHISPER_MODEL", "small")  # size name (downloaded on first use) or a local model directory
+FASTER_WHISPER_MODEL = os.getenv("FASTER_WHISPER_MODEL", "Systran/faster-whisper-small.en")  # HF repo id (MIT), a size name, or a local model directory
+FASTER_WHISPER_REVISION = os.getenv("FASTER_WHISPER_REVISION", "d1d751a5f8271d482d14ca55d9e2deeebbae577f") or None  # pinned HF commit of the repo above; empty = latest
 FASTER_WHISPER_DEVICE = os.getenv("FASTER_WHISPER_DEVICE", "auto")  # auto | cpu | cuda
-FASTER_WHISPER_COMPUTE_TYPE = os.getenv("FASTER_WHISPER_COMPUTE_TYPE", "default")  # e.g. float16 on GPU, int8 on CPU
-FASTER_WHISPER_LANGUAGE = os.getenv("FASTER_WHISPER_LANGUAGE") or None  # None = auto-detect per recording
+FASTER_WHISPER_COMPUTE_TYPE = os.getenv("FASTER_WHISPER_COMPUTE_TYPE", "float16")  # float16 on GPU; a CPU load automatically uses int8
+FASTER_WHISPER_LANGUAGE = os.getenv("FASTER_WHISPER_LANGUAGE", "en") or None  # English-only model: "en"
+FASTER_WHISPER_BEAM_SIZE = int(os.getenv("FASTER_WHISPER_BEAM_SIZE", "3"))
+FASTER_WHISPER_VAD = os.getenv("FASTER_WHISPER_VAD", "true").strip().lower() not in ("0", "false", "no", "off")  # voice-activity filter (Silero, bundled)
+# Kokoro-82M TTS (Apache-2.0): official `kokoro` package, weights fetched from Hugging Face at a pinned commit into LOCAL_MODELS_DIR/kokoro.
+KOKORO_REPO = os.getenv("KOKORO_REPO", "hexgrad/Kokoro-82M")
+KOKORO_REVISION = os.getenv("KOKORO_REVISION", "f3ff3571791e39611d31c381e3a41a3af07b4987") or None
+KOKORO_VOICE = os.getenv("KOKORO_VOICE", "af_heart")  # American-English voices start with af_/am_; British with bf_/bm_ (lang code is derived from the prefix)
+KOKORO_DEVICE = os.getenv("KOKORO_DEVICE", "auto")  # auto | cpu | cuda. 'auto' = CUDA when torch sees it; falls back to CPU on any CUDA failure
+KOKORO_SPEED = float(os.getenv("KOKORO_SPEED", "1.0"))
+# Concurrency and time budgets for the speech models (a 6 GB GPU also hosts the Ollama model). Requests beyond the limit queue, then give up.
+VOICE_STT_CONCURRENCY = max(1, int(os.getenv("VOICE_STT_CONCURRENCY", "1")))
+VOICE_TTS_CONCURRENCY = max(1, int(os.getenv("VOICE_TTS_CONCURRENCY", "1")))
+VOICE_STT_TIMEOUT_SECONDS = float(os.getenv("VOICE_STT_TIMEOUT_SECONDS", "30"))   # queue wait + transcription
+VOICE_TTS_TIMEOUT_SECONDS = float(os.getenv("VOICE_TTS_TIMEOUT_SECONDS", "30"))   # queue wait + synthesis
 PIPER_VOICE = os.getenv("PIPER_VOICE", "en_US-lessac-medium.onnx")  # file name inside LOCAL_MODELS_DIR/piper/, or an absolute path
 # STT_PROVIDER=onnx_local: Whisper on ONNX Runtime via the pure-Python onnx-asr package — for machines where the
 # faster-whisper/CTranslate2 native library can't load (e.g. blocked by a Windows application-control policy).

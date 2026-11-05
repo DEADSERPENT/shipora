@@ -1,10 +1,10 @@
-"""Speech-to-text. Two providers, selected by STT_PROVIDER:
+"""Speech-to-text. Providers, selected by STT_PROVIDER:
 
-  openai          OpenAI Whisper API (default; needs OPENAI_API_KEY)
-  faster_whisper  local faster-whisper (CTranslate2), no API key — optional install,
-                  see requirements-local-voice.txt and docs/LOCAL_VOICE.md
-  onnx_local      local Whisper on ONNX Runtime (onnx-asr), no API key — for machines where
-                  CTranslate2 can't load (e.g. blocked by a Windows application-control policy)
+  faster_whisper  DEFAULT. Local faster-whisper (CTranslate2) running Systran/faster-whisper-small.en (MIT) — English only, no API
+                  key, nothing leaves the machine. Install: requirements-local-voice.txt; see docs/LOCAL_VOICE.md
+  onnx_local      local Whisper on ONNX Runtime (onnx-asr), no API key — for machines where CTranslate2 can't load
+                  (e.g. blocked by a Windows application-control policy)
+  openai          OpenAI Whisper API — hosted, paid, OPT-IN only (STT_PROVIDER=openai + OPENAI_API_KEY). Never used as a fallback.
 
 Adding another provider means writing one STTProvider class and registering it in
 _PROVIDERS, without touching transcribe_audio() or any caller. See
@@ -19,6 +19,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Type
 
 import config
+from services.speech_limits import SpeechModelError, SpeechTimeout, run_limited
 log = logging.getLogger("shipora.stt")
 
 
@@ -62,10 +63,22 @@ def _register_cuda_dlls() -> None:
             os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
 
 
+def _load_attempts(device: str, compute: str):
+    """(device, compute_type) combinations to try, best first. float16 needs a GPU; every chain ends on CPU int8 so a machine
+    without a usable GPU still transcribes (slower) instead of failing."""
+    if device == "cpu":
+        return [("cpu", "int8" if compute in ("float16", "int8_float16") else compute)]
+    chain = [(device, compute)]
+    if compute == "float16":
+        chain.append((device, "int8_float16"))
+    chain.append(("cpu", "int8"))
+    return list(dict.fromkeys(chain))
+
+
 def _load_whisper_model():
     """Loads (once per process) the faster-whisper model. Isolated so tests can replace it.
-    Uses the GPU when CUDA works (FASTER_WHISPER_DEVICE=auto/cuda) and falls back to CPU int8 when the CUDA libraries are
-    missing, so a machine without them still transcribes — just slower."""
+    Tries CUDA float16 -> CUDA int8_float16 -> CPU int8 (each GPU attempt is exercised once, because CUDA library errors only
+    surface on first use). Raises SpeechModelError with the fix when the model cannot be obtained."""
     global _whisper_model
     with _whisper_lock:
         if _whisper_model is None:
@@ -76,19 +89,24 @@ def _load_whisper_model():
 
             name = config.FASTER_WHISPER_MODEL
             local_dir = local_models.resolve(name, "whisper")
-            source = str(local_dir) if local_dir.is_dir() else name  # a downloaded model dir wins; a bare size name is fetched by faster-whisper on first use
+            source = str(local_dir) if local_dir.is_dir() else name  # a model directory wins; otherwise an HF repo id / size name fetched into download_root
             download_root = str(local_models.models_dir() / "whisper")
-            device, compute = config.FASTER_WHISPER_DEVICE, config.FASTER_WHISPER_COMPUTE_TYPE
-            try:
-                _whisper_model = WhisperModel(source, device=device, compute_type=compute, download_root=download_root)
-                if device != "cpu":
-                    list(_whisper_model.transcribe(__import__("numpy").zeros(16000, dtype="float32"))[0])  # CUDA library errors only surface on first use
-                    log.info("faster-whisper ready", extra={"event": "stt_ready", "provider": "faster_whisper", "device": device})
-            except (RuntimeError, ValueError) as err:
-                if device == "cpu":
-                    raise
-                log.warning("faster-whisper GPU unavailable; using CPU", extra={"event": "stt_gpu_fallback", "provider": "faster_whisper", "error": str(err)[:200]})
-                _whisper_model = WhisperModel(source, device="cpu", compute_type="int8", download_root=download_root)
+            last_err = None
+            for device, compute in _load_attempts(config.FASTER_WHISPER_DEVICE, config.FASTER_WHISPER_COMPUTE_TYPE):
+                try:
+                    model = WhisperModel(source, device=device, compute_type=compute, download_root=download_root, revision=config.FASTER_WHISPER_REVISION)
+                    if device != "cpu":
+                        list(model.transcribe(__import__("numpy").zeros(16000, dtype="float32"))[0])  # CUDA library errors only surface on first use
+                    _whisper_model = model
+                    log.info("faster-whisper ready", extra={"event": "stt_ready", "provider": "faster_whisper", "model": name, "device": device, "compute_type": compute})
+                    return _whisper_model
+                except (RuntimeError, ValueError) as err:
+                    last_err = err
+                    log.warning("faster-whisper load attempt failed", extra={"event": "stt_load_attempt_failed", "provider": "faster_whisper", "device": device, "compute_type": compute, "error": str(err)[:200]})
+                except Exception as err:   # e.g. no network / repo or revision not found while downloading
+                    raise SpeechModelError(f"Could not load speech-to-text model '{name}' (revision {config.FASTER_WHISPER_REVISION or 'latest'}): {err}. "
+                                           f"Check network access to huggingface.co, or download the model into {download_root} (docs/LOCAL_VOICE.md).") from err
+            raise SpeechModelError(f"faster-whisper could not start on any device ({last_err}). Set FASTER_WHISPER_DEVICE=cpu or install the CUDA runtime (requirements-local-voice.txt).")
         return _whisper_model
 
 
@@ -97,10 +115,10 @@ class FasterWhisperProvider(STTProvider):
         try:
             model = _load_whisper_model()
         except ImportError as err:  # not installed, or installed but its native library failed to load (e.g. blocked by an OS policy)
-            log.error("faster-whisper could not be imported", extra={"event": "stt_provider_unavailable", "provider": "faster_whisper", "error": str(err)[:300], "hint": "pip install -r requirements-local-voice.txt; see docs/LOCAL_VOICE.md"})
-            return None
+            raise SpeechModelError(f"faster-whisper could not be imported ({str(err)[:200]}). Run: pip install -r requirements-local-voice.txt (docs/LOCAL_VOICE.md).") from err
         # Browser recordings (webm/opus, mp4) are decoded by faster-whisper's bundled PyAV — no ffmpeg needed.
-        segments, _info = model.transcribe(io.BytesIO(audio_bytes), language=config.FASTER_WHISPER_LANGUAGE, vad_filter=True)
+        segments, _info = model.transcribe(io.BytesIO(audio_bytes), language=config.FASTER_WHISPER_LANGUAGE, beam_size=config.FASTER_WHISPER_BEAM_SIZE,
+                                           vad_filter=config.FASTER_WHISPER_VAD)
         text = " ".join(seg.text.strip() for seg in segments).strip()  # `segments` is lazy: decoding happens while iterating
         return text or None
 
@@ -183,16 +201,22 @@ _PROVIDERS: dict[str, Type[STTProvider]] = {
 
 
 async def transcribe_audio(audio_bytes: bytes, filename: str) -> Optional[str]:
-    """Returns the transcript, or None if the configured provider isn't
-    implemented, no usable API key is set, or transcription failed (caller
-    should surface a "voice unavailable" error)."""
-    provider_name = (config.STT_PROVIDER or "openai").lower()
+    """Returns the transcript, or None if the configured provider isn't implemented / usable, transcription failed or timed out
+    (caller should surface a "voice unavailable" error). The reason is always logged with what to do about it. Only the provider
+    named in STT_PROVIDER is ever called — there is no fallback to another (least of all a paid) provider."""
+    provider_name = (config.STT_PROVIDER or "faster_whisper").lower()
     provider_cls = _PROVIDERS.get(provider_name)
     if provider_cls is None:
         log.error("unknown STT provider", extra={"event": "stt_unknown_provider", "provider": provider_name, "available": str(list(_PROVIDERS))})
         return None
     try:
-        return await asyncio.to_thread(provider_cls().transcribe, audio_bytes, filename)
+        return await run_limited("stt", provider_cls().transcribe, audio_bytes, filename)
+    except SpeechTimeout as err:
+        log.warning("STT timed out", extra={"event": "stt_timeout", "provider": provider_name, "error": str(err)})
+        return None
+    except SpeechModelError as err:
+        log.error("STT model unavailable", extra={"event": "stt_provider_unavailable", "provider": provider_name, "error": str(err)[:400]})
+        return None
     except Exception as err:
         log.warning("STT call failed", extra={"event": "stt_failed", "provider": provider_name, "error_type": type(err).__name__, "error": str(err)[:200]})
         return None

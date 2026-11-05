@@ -1,4 +1,4 @@
-"""Local open-source voice providers (faster-whisper STT, Piper TTS) — alongside, not instead of, OpenAI.
+"""Local open-source voice providers (faster-whisper STT, Kokoro/Piper TTS); OpenAI is opt-in.
 
 Model inference is mocked everywhere: these tests never load a model, never need the optional packages
 installed, and never touch the network. They check the provider wiring, the failure behaviour and the
@@ -27,13 +27,13 @@ def wav_bytes(n_frames=800) -> bytes:
 
 
 # ─── Registry / defaults ────────────────────────────────────────────────────
-def test_openai_stays_the_default_and_both_providers_are_registered():
+def test_local_providers_are_the_default_and_openai_is_opt_in():
     # The code defaults, read from source: the live config.* values also reflect a developer's own .env
     # (which may already select the local providers), so they say nothing about the defaults.
     source = (Path(config.__file__)).read_text(encoding="utf-8")
-    assert 'os.getenv("STT_PROVIDER", "openai")' in source and 'os.getenv("TTS_PROVIDER", "openai")' in source
+    assert 'os.getenv("STT_PROVIDER", "faster_whisper")' in source and 'os.getenv("TTS_PROVIDER", "kokoro")' in source
     assert set(stt._PROVIDERS) == {"openai", "faster_whisper", "onnx_local"}
-    assert set(tts._PROVIDERS) == {"openai", "piper"}
+    assert set(tts._PROVIDERS) == {"openai", "piper", "kokoro"}
     assert stt._PROVIDERS["openai"] is stt.OpenAIWhisperProvider
     assert tts._PROVIDERS["openai"] is tts.OpenAITTSProvider
 
@@ -340,7 +340,7 @@ def test_faster_whisper_falls_back_to_cpu_when_the_gpu_libraries_are_missing(mon
     calls = []
 
     class FakeModel:
-        def __init__(self, source, device, compute_type, download_root):
+        def __init__(self, source, device, compute_type, download_root, revision=None):
             calls.append((device, compute_type))
             if device != "cpu":
                 raise RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
@@ -349,5 +349,5 @@ def test_faster_whisper_falls_back_to_cpu_when_the_gpu_libraries_are_missing(mon
     monkeypatch.setattr(stt, "_whisper_model", None)
     monkeypatch.setattr(config, "FASTER_WHISPER_DEVICE", "auto")
     assert isinstance(stt._load_whisper_model(), FakeModel)
-    assert calls == [("auto", config.FASTER_WHISPER_COMPUTE_TYPE), ("cpu", "int8")]
+    assert calls == [("auto", config.FASTER_WHISPER_COMPUTE_TYPE), ("auto", "int8_float16"), ("cpu", "int8")]
     monkeypatch.setattr(stt, "_whisper_model", None)

@@ -1,18 +1,3 @@
-"""In-process sliding-window rate limiting for the endpoints that are security-sensitive
-(login, registration, password reset) or expensive (AI chat, voice, public tracking,
-shipment creation).
-
-Design notes
-  * No new infrastructure: state lives in this process. Behind several workers/replicas each
-    process counts separately, so the effective limit is `limit × workers` — acceptable for this
-    deployment size; a shared store (e.g. Redis) is the upgrade path if it ever matters.
-  * Limits are configurable per bucket: RATE_LIMIT_<BUCKET>="<count>/<seconds>" (e.g. RATE_LIMIT_LOGIN=10/60);
-    RATE_LIMIT_ENABLED=false turns it off. A malformed value falls back to the default — a typo must
-    never silently disable protection.
-  * Client IP comes from the socket; X-Forwarded-For is honoured only when TRUST_PROXY_HEADERS=true
-    (otherwise anyone could dodge a limit by spoofing the header).
-  * Normal tracking/status traffic (GET shipments, status updates, vehicle updates) is deliberately not limited.
-"""
 import hashlib
 import logging
 import math

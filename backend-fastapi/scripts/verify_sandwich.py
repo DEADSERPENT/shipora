@@ -50,7 +50,7 @@ def execution_note() -> str:
     else:
         stt_where = config.ONNX_STT_DEVICE.upper()
     llm_where = f"Ollama {config.OLLAMA_MODEL} (GPU if the model fits in VRAM)"
-    tts_where = "cloud" if config.TTS_PROVIDER == "openai" else "CPU"
+    tts_where = "cloud" if config.TTS_PROVIDER == "openai" else (f"{config.KOKORO_DEVICE} (GPU if CUDA works, else CPU)" if config.TTS_PROVIDER == "kokoro" else "CPU")
     return f"STT {stt_where}; LLM {llm_where}; TTS {tts_where}"
 
 

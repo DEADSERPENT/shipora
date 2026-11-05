@@ -1,12 +1,18 @@
-# Optional: local, open-source speech providers (STT_PROVIDER=faster_whisper | onnx_local, TTS_PROVIDER=piper).
-# Not part of requirements.txt on purpose — they are large and the default providers (openai) don't need them.
-# Install into the backend venv:  pip install -r requirements-local-voice.txt   (setup: docs/LOCAL_VOICE.md)
+# Local, open-source speech (the default: STT_PROVIDER=faster_whisper, TTS_PROVIDER=kokoro). English only. No API keys.
+# Install into the backend venv:  pip install -r requirements-local-voice.txt   (setup + GPU notes: docs/LOCAL_VOICE.md)
 -r requirements.txt
-faster-whisper>=1.0
-piper-tts>=1.2
-# onnx_local STT (Whisper on ONNX Runtime, pure Python): works where CTranslate2 (faster-whisper) is blocked by the OS
-onnx-asr[cpu,hub]>=0.12
-av>=12  # decodes browser recordings (webm/opus) in-process
+faster-whisper>=1.0          # CTranslate2 backend; model Systran/faster-whisper-small.en (MIT)
+av>=12                       # decodes browser recordings (webm/opus) in-process
+kokoro>=0.9.4                # official Kokoro-82M inference package (Apache-2.0 weights); pulls misaki[en] (phonemizer)
+soundfile
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl   # misaki (Kokoro phonemizer) would otherwise pip-install this on first synthesis
+# PyTorch for Kokoro. For a CUDA build install it FIRST from the matching index, e.g. (RTX 3060, CUDA 12.6):
+#   pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu126
+# A plain `pip install torch` gives a CPU-only build on Windows, which Kokoro still runs on (KOKORO_DEVICE=cpu).
+torch>=2.5
 # GPU speech-to-text on NVIDIA (FASTER_WHISPER_DEVICE=auto uses it automatically; without these it falls back to CPU)
 nvidia-cublas-cu12; sys_platform == "win32" or sys_platform == "linux"
 nvidia-cudnn-cu12; sys_platform == "win32" or sys_platform == "linux"
+# Optional alternatives
+piper-tts>=1.2               # TTS_PROVIDER=piper (local fallback voice, WAV)
+onnx-asr[cpu,hub]>=0.12      # STT_PROVIDER=onnx_local (works where CTranslate2 is blocked by the OS)

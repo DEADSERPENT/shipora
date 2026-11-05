@@ -28,13 +28,21 @@ async def _timed(name: str, coro) -> dict:
 
 async def warm_up() -> list:
     steps = []
-    if (config.STT_PROVIDER or "").lower() == "onnx_local":
-        steps.append(_timed("stt", asyncio.to_thread(stt._load_onnx_model)))
-    if (config.TTS_PROVIDER or "").lower() == "piper":
-        steps.append(_timed("tts", tts.synthesize_speech("Ready.")))
-    if (config.STT_PROVIDER or "").lower() == "faster_whisper":
-        steps.append(_timed("stt", asyncio.to_thread(stt._load_whisper_model)))
-    steps.append(_timed("llm", ollama_client.chat([{"role": "user", "content": "hi"}], max_tokens=1)))
-    results = await asyncio.gather(*steps)
+    stt_name, tts_name = (config.STT_PROVIDER or "").lower(), (config.TTS_PROVIDER or "").lower()
+    # Only local models are loaded; a hosted provider has nothing to warm. Loading is sequential on purpose (below): two models
+    # moving onto a 6 GB GPU at once is how it runs out of memory.
+    if stt_name == "onnx_local":
+        steps.append(("stt", stt._load_onnx_model))
+    elif stt_name == "faster_whisper":
+        steps.append(("stt", stt._load_whisper_model))
+    if tts_name == "kokoro":
+        steps.append(("tts", tts._load_kokoro))
+    elif tts_name == "piper":
+        steps.append(("tts", tts._load_piper_voice))
+
+    async def load_local_models():
+        return [await _timed(name, asyncio.to_thread(fn)) for name, fn in steps]
+
+    results = [*await load_local_models(), await _timed("llm", ollama_client.chat([{"role": "user", "content": "hi"}], max_tokens=1))]
     log.info("voice stack warmed", extra={"event": "warmup_done", "steps": str(results)})
-    return list(results)
+    return results

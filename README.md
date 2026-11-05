@@ -31,7 +31,7 @@ Lifecycle: `CREATED → PICKUP_SCHEDULED → PICKED_UP → IN_TRANSIT → OUT_FO
 └────────┬───────────────────────┬───────────────────────────┬──────────────────────┘
          ▼                       ▼                           ▼
    MongoDB (Motor+Beanie)   OpenStreetMap / Nominatim    Ollama (local LLM)
-   or in-memory mongomock   / OSRM (maps, routing)       Whisper STT · Piper TTS
+   or in-memory mongomock   / OSRM (maps, routing)       faster-whisper · Kokoro
 ```
 
 - **Server owns the rules** — status transitions and permissions live in the backend; the UI renders `allowedNextStatuses`.
@@ -75,20 +75,20 @@ message (text/voice) → load history (MongoDB) → router {agent, sentiment} �
 The voice pipeline is a **sandwich**: speech-to-text → reasoning → text-to-speech. Plain text is the only interface between the three layers, so each can be inspected, tested and swapped on its own. An end-to-end speech model would hide all of that in one opaque call and make database-grounded answers hard to enforce.
 
 ```
- Mic ──▶ ① STT        audio → transcript        (Whisper: OpenAI | faster-whisper | ONNX)
+ Mic ──▶ ① STT        audio → transcript        (faster-whisper small.en | ONNX | OpenAI opt-in)
          │             + repair of spelled tracking numbers ("S H P one alpha…" → SHP1A…)
          ▼
          ② Reasoning  router picks {agent, sentiment}, then a specialist
          │             (tracking · complaints · schedule · support · general)
          │             calls tools/ → real DB queries → grounded reply
          ▼
-         ③ TTS        reply → audio             (Piper local WAV | OpenAI MP3)
+         ③ TTS        reply → audio             (Kokoro local WAV | Piper | OpenAI opt-in)
          ▼
        Speaker, then listening resumes automatically
 ```
 
 - **Real progress events** — the backend emits `voice:stage` (transcribing, thinking, tool_execution, generating_response) over Socket.IO; the frontend runs a ten-state machine on them.
-- **Independent fallbacks** — no LLM: keyword routing plus database answers. No STT: user is asked to type. No TTS: text reply only. With `onnx_local` + `piper`, voice works with no API keys.
+- **Independent fallbacks** — no LLM: keyword routing plus database answers. No STT: user is asked to type. No TTS: text reply only. Voice works with no API keys (local defaults).
 - **Verify it** — `python scripts/verify_sandwich.py`. More: [`docs/VOICE_ARCHITECTURE.md`](docs/VOICE_ARCHITECTURE.md), [`docs/LOCAL_VOICE.md`](docs/LOCAL_VOICE.md).
 
 ## Tech stack
@@ -98,7 +98,7 @@ The voice pipeline is a **sandwich**: speech-to-text → reasoning → text-to-s
 | App | React 18, React-Leaflet, Socket.IO · Python 3.11+, FastAPI, Uvicorn, python-socketio |
 | Database | MongoDB via Motor + Beanie (in-memory mongomock fallback) |
 | Auth / Maps | PyJWT + bcrypt · OpenStreetMap, Nominatim, OSRM |
-| AI | Ollama (`qwen2.5:3b`); STT: Whisper / faster-whisper / ONNX; TTS: OpenAI / Piper |
+| AI | Ollama (`qwen2.5:3b`); STT: faster-whisper small.en; TTS: Kokoro-82M (local, English) |
 
 ## Getting started
 
@@ -136,9 +136,9 @@ CLIENT_URL=http://localhost:3000
 JWT_SECRET=<32+ random chars>     # python -c "import secrets; print(secrets.token_urlsafe(48))"
 MONGO_URI=mongodb://localhost:27017/shipora
 OLLAMA_MODEL=qwen2.5:3b           # optional: ollama pull qwen2.5:3b
-STT_PROVIDER=openai               # openai | faster_whisper | onnx_local
-TTS_PROVIDER=openai               # openai | piper
-OPENAI_API_KEY=…                  # only for OpenAI STT/TTS
+STT_PROVIDER=faster_whisper       # faster_whisper | onnx_local | openai (opt-in)
+TTS_PROVIDER=kokoro               # kokoro | piper | openai (opt-in)
+# OPENAI_API_KEY=…              # only if you opt in to OpenAI STT/TTS; see docs/LOCAL_VOICE.md
 ```
 
 The app refuses to start without a strong `JWT_SECRET`. First admin on a real database: `scripts/bootstrap_real_data.py`.
